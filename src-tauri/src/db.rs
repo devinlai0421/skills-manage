@@ -127,6 +127,43 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
+    // Migration: add created_at column to skill_installations for existing databases
+    // that were created before this column was introduced. We check via PRAGMA table_info
+    // and run a two-step migration only when the column is absent:
+    //   1. ALTER TABLE ADD COLUMN created_at TEXT  (nullable, no default expression –
+    //      SQLite's ALTER TABLE does not support non-constant default expressions on
+    //      some builds, e.g. the Apple-modified SQLite on macOS).
+    //   2. UPDATE … SET created_at = datetime('now') WHERE created_at IS NULL  –
+    //      backfills existing rows with the current timestamp.
+    // New rows written by the application always supply created_at explicitly, so
+    // there is no need for a database-level DEFAULT after the migration runs.
+    let columns = sqlx::query("PRAGMA table_info(skill_installations)")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let has_created_at = columns.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .map(|name| name == "created_at")
+            .unwrap_or(false)
+    });
+
+    if !has_created_at {
+        // Step 1: add the column (nullable, no expression default for compatibility).
+        sqlx::query("ALTER TABLE skill_installations ADD COLUMN created_at TEXT")
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Step 2: backfill existing rows with the current timestamp.
+        sqlx::query(
+            "UPDATE skill_installations SET created_at = datetime('now') WHERE created_at IS NULL",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
     // agents table
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS agents (
@@ -1495,5 +1532,145 @@ mod tests {
         assert_eq!(get_setting(&pool, "key1").await.unwrap().as_deref(), Some("val1"));
         assert_eq!(get_setting(&pool, "key2").await.unwrap().as_deref(), Some("val2"));
         assert_eq!(get_setting(&pool, "key3").await.unwrap().as_deref(), Some("val3"));
+    }
+
+    // ── Migration: created_at ─────────────────────────────────────────────────
+
+    /// Verifies that `init_database` adds the `created_at` column to an existing
+    /// `skill_installations` table that was created with the old schema (before
+    /// the column was introduced), and that existing rows are backfilled.
+    #[tokio::test]
+    async fn test_migration_adds_created_at_to_skill_installations() {
+        // Create a fresh in-memory pool WITHOUT calling init_database first.
+        let pool = SqlitePool::connect(":memory:")
+            .await
+            .expect("Failed to create in-memory SQLite pool");
+
+        // Build the OLD skill_installations schema — no created_at column.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS skill_installations (
+                skill_id       TEXT NOT NULL,
+                agent_id       TEXT NOT NULL,
+                installed_path TEXT NOT NULL,
+                link_type      TEXT NOT NULL,
+                symlink_target TEXT,
+                PRIMARY KEY (skill_id, agent_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to create old skill_installations table");
+
+        // Create the skills table so the FK-style relationship is consistent.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS skills (
+                id             TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                description    TEXT,
+                file_path      TEXT NOT NULL,
+                canonical_path TEXT,
+                is_central     BOOLEAN NOT NULL DEFAULT 0,
+                source         TEXT,
+                content        TEXT,
+                scanned_at     TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to create skills table");
+
+        // Insert a skill row (needed before the installation row references it).
+        sqlx::query(
+            "INSERT INTO skills (id, name, file_path, is_central, scanned_at)
+             VALUES ('legacy-skill', 'Legacy Skill', '/tmp/legacy-skill/SKILL.md', 0, '2024-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to insert legacy skill");
+
+        // Insert an installation row using the OLD schema (no created_at column).
+        sqlx::query(
+            "INSERT INTO skill_installations (skill_id, agent_id, installed_path, link_type)
+             VALUES ('legacy-skill', 'claude-code', '/tmp/claude/legacy-skill', 'symlink')",
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to insert legacy skill_installations row");
+
+        // Run init_database — should detect the missing created_at column and add it.
+        init_database(&pool)
+            .await
+            .expect("init_database should succeed and apply the created_at migration");
+
+        // Confirm the column now exists in PRAGMA table_info.
+        let columns = sqlx::query("PRAGMA table_info(skill_installations)")
+            .fetch_all(&pool)
+            .await
+            .expect("PRAGMA table_info should succeed");
+
+        let has_created_at = columns.iter().any(|row| {
+            row.try_get::<String, _>("name")
+                .map(|name| name == "created_at")
+                .unwrap_or(false)
+        });
+        assert!(
+            has_created_at,
+            "created_at column must exist in skill_installations after migration"
+        );
+
+        // Confirm that the pre-existing row has a non-empty created_at value
+        // (backfilled by the DEFAULT (datetime('now')) expression).
+        let row = sqlx::query(
+            "SELECT created_at FROM skill_installations \
+             WHERE skill_id = 'legacy-skill' AND agent_id = 'claude-code'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("Pre-existing installation row should still be queryable after migration");
+
+        let created_at: String = row
+            .try_get("created_at")
+            .expect("created_at should be readable from the pre-existing row");
+        assert!(
+            !created_at.is_empty(),
+            "Pre-existing rows must have a non-empty created_at value after migration (got: '{}')",
+            created_at
+        );
+    }
+
+    /// Verifies that calling `init_database` on a fresh database (one that already
+    /// includes created_at in the CREATE TABLE) does NOT trigger the ALTER TABLE
+    /// migration path — i.e., the second `init_database` call is fully idempotent
+    /// and does not fail.
+    #[tokio::test]
+    async fn test_migration_skipped_when_created_at_already_exists() {
+        // setup_test_db calls init_database, which creates the table WITH created_at.
+        let pool = setup_test_db().await;
+
+        // A second call to init_database must succeed without error (idempotent).
+        let result = init_database(&pool).await;
+        assert!(
+            result.is_ok(),
+            "Second init_database should be idempotent when created_at already exists"
+        );
+
+        // Confirm created_at is still present and there's exactly one occurrence.
+        let columns = sqlx::query("PRAGMA table_info(skill_installations)")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let created_at_count = columns
+            .iter()
+            .filter(|row| {
+                row.try_get::<String, _>("name")
+                    .map(|name| name == "created_at")
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            created_at_count,
+            1,
+            "created_at column should appear exactly once after repeated init"
+        );
     }
 }
