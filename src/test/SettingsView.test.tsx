@@ -13,8 +13,13 @@ vi.mock("../stores/platformStore", () => ({
   usePlatformStore: vi.fn(),
 }));
 
+vi.mock("../stores/themeStore", () => ({
+  useThemeStore: vi.fn(),
+}));
+
 import { useSettingsStore } from "../stores/settingsStore";
 import { usePlatformStore } from "../stores/platformStore";
+import { useThemeStore } from "../stores/themeStore";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -70,6 +75,8 @@ function setupMocks({
   updateCustomAgent = vi.fn(),
   removeCustomAgent = vi.fn(),
   rescan = vi.fn(),
+  flavor = "mocha" as const,
+  setFlavor = vi.fn(),
 } = {}) {
   vi.mocked(useSettingsStore).mockImplementation((selector) =>
     selector({
@@ -95,6 +102,14 @@ function setupMocks({
       error: null,
       initialize: vi.fn(),
       rescan,
+    })
+  );
+
+  vi.mocked(useThemeStore).mockImplementation((selector) =>
+    selector({
+      flavor,
+      setFlavor,
+      init: vi.fn(),
     })
   );
 }
@@ -378,5 +393,60 @@ describe("SettingsView", () => {
     setupMocks();
     renderSettingsView();
     expect(screen.getByText("数据库路径")).toBeTruthy();
+  });
+
+  // ── Flavor Switcher ──────────────────────────────────────────────────────
+
+  it("shows flavor label in about section", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByText("主题风格")).toBeTruthy();
+  });
+
+  it("renders all 4 flavor buttons", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByRole("button", { name: /Mocha/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Macchiato/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Frappé/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Latte/ })).toBeTruthy();
+  });
+
+  it("active flavor button has aria-pressed=true", () => {
+    setupMocks({ flavor: "mocha" });
+    renderSettingsView();
+    const mochaBtn = screen.getByRole("button", { name: /Mocha/ });
+    expect(mochaBtn).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("inactive flavor button has aria-pressed=false", () => {
+    setupMocks({ flavor: "mocha" });
+    renderSettingsView();
+    const latteBtn = screen.getByRole("button", { name: /Latte/ });
+    expect(latteBtn).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("clicking a flavor button calls setFlavor", () => {
+    const setFlavor = vi.fn();
+    setupMocks({ flavor: "mocha", setFlavor });
+    renderSettingsView();
+    fireEvent.click(screen.getByRole("button", { name: /Latte/ }));
+    expect(setFlavor).toHaveBeenCalledWith("latte");
+  });
+
+  it("each flavor button shows a color dot", () => {
+    setupMocks();
+    renderSettingsView();
+    // Each flavor button should have a colored dot (inline span with rounded-full)
+    const buttons = [
+      screen.getByRole("button", { name: /Mocha/ }),
+      screen.getByRole("button", { name: /Macchiato/ }),
+      screen.getByRole("button", { name: /Frappé/ }),
+      screen.getByRole("button", { name: /Latte/ }),
+    ];
+    for (const btn of buttons) {
+      const dot = btn.querySelector(".rounded-full");
+      expect(dot).toBeTruthy();
+    }
   });
 });

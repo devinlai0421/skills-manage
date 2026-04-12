@@ -207,6 +207,11 @@
     "about": "About",
     "appVersion": "App Version",
     "dbPath": "Database Path",
+    "flavor": "Flavor",
+    "mocha": "Mocha",
+    "macchiato": "Macchiato",
+    "frappe": "Frappé",
+    "latte": "Latte",
     "language": "Language",
     "chinese": "中文",
     "english": "English"

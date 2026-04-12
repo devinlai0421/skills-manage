@@ -207,6 +207,11 @@
     "about": "关于",
     "appVersion": "应用版本",
     "dbPath": "数据库路径",
+    "flavor": "主题风格",
+    "mocha": "Mocha",
+    "macchiato": "Macchiato",
+    "frappe": "Frappé",
+    "latte": "Latte",
     "language": "语言",
     "chinese": "中文",
     "english": "English"

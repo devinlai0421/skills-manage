@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe } from "lucide-react";
+import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useThemeStore, CatppuccinFlavor } from "@/stores/themeStore";
 import { usePlatformStore } from "@/stores/platformStore";
 import { AddDirectoryDialog } from "@/components/settings/AddDirectoryDialog";
 import { PlatformDialog } from "@/components/settings/PlatformDialog";
@@ -23,6 +24,16 @@ import { AgentWithStatus, ScanDirectory } from "@/types";
 
 const APP_VERSION = "0.1.0";
 const DB_PATH = "~/.skillsmanage/db.sqlite";
+
+/** Catppuccin Green hex per flavor — used for visual preview dots on flavor buttons. */
+const FLAVOR_COLORS: Record<CatppuccinFlavor, string> = {
+  mocha: "#a6e3a1",
+  macchiato: "#a6da95",
+  frappe: "#a6d189",
+  latte: "#40a02b",
+};
+
+const FLAVOR_ORDER: CatppuccinFlavor[] = ["mocha", "macchiato", "frappe", "latte"];
 
 // ─── ScanDirectoryRow ─────────────────────────────────────────────────────────
 
@@ -147,6 +158,9 @@ export function SettingsView() {
   const removeCustomAgent = useSettingsStore((s) => s.removeCustomAgent);
 
   const agents = usePlatformStore((s) => s.agents);
+
+  const flavor = useThemeStore((s) => s.flavor);
+  const setFlavor = useThemeStore((s) => s.setFlavor);
   const rescan = usePlatformStore((s) => s.rescan);
 
   // Custom agents are those that are not built-in.
@@ -413,6 +427,30 @@ export function SettingsView() {
                 <div>
                   <div className="text-xs text-muted-foreground">{t("settings.dbPath")}</div>
                   <div className="text-sm font-medium font-mono">{DB_PATH}</div>
+                </div>
+              </div>
+              {/* ── Flavor Switcher ──────────────────────────────────────── */}
+              <div className="flex items-center gap-3">
+                <Palette className="size-4 text-muted-foreground shrink-0" />
+                <div className="flex-1">
+                  <div className="text-xs text-muted-foreground mb-1.5">{t("settings.flavor")}</div>
+                  <div className="flex gap-2">
+                    {FLAVOR_ORDER.map((f) => (
+                      <Button
+                        key={f}
+                        variant={flavor === f ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setFlavor(f)}
+                        aria-pressed={flavor === f}
+                      >
+                        <span
+                          className="inline-block size-2 rounded-full mr-1.5 shrink-0"
+                          style={{ backgroundColor: FLAVOR_COLORS[f] }}
+                        />
+                        {t(`settings.${f}`)}
+                      </Button>
+                    ))}
+                  </div>
                 </div>
               </div>
               {/* ── Language Switcher ──────────────────────────────────────── */}
