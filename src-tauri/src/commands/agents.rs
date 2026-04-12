@@ -300,7 +300,7 @@ mod tests {
     async fn test_get_agents_returns_all_builtin() {
         let pool = setup_test_db().await;
         let agents = get_agents_impl(&pool).await.unwrap();
-        assert_eq!(agents.len(), 11, "should return all 11 built-in agents");
+        assert_eq!(agents.len(), 28, "should return all 28 built-in agents");
     }
 
     #[tokio::test]
@@ -372,7 +372,7 @@ mod tests {
     async fn test_detect_agents_returns_all_agents() {
         let pool = setup_test_db().await;
         let agents = detect_agents_impl(&pool).await.unwrap();
-        assert_eq!(agents.len(), 11);
+        assert_eq!(agents.len(), 28);
     }
 
     // ── add_custom_agent_impl ─────────────────────────────────────────────────
@@ -391,7 +391,7 @@ mod tests {
         add_custom_agent_impl(&pool, config).await.unwrap();
 
         let agents = get_agents_impl(&pool).await.unwrap();
-        assert_eq!(agents.len(), 12, "should have 11 built-ins + 1 custom");
+        assert_eq!(agents.len(), 29, "should have 28 built-ins + 1 custom");
 
         let custom = agents.iter().find(|a| a.id == "my-custom").unwrap();
         assert_eq!(custom.display_name, "My Custom Agent");

@@ -51,6 +51,26 @@ User clicks "Install to..." on a Central Skill
 | `~/.trae/skills/` | Trae global skills |
 | `~/.factory/skills/` | Factory Droid global skills |
 | `~/.openclaw/skills/` | OpenClaw global skills |
+| `~/.junie/skills/` | Junie global skills |
+| `~/.qwen/skills/` | Qwen global skills |
+| `~/.trae-cn/skills/` | Trae CN global skills |
+| `~/.windsurf/skills/` | Windsurf global skills |
+| `~/.qoder/skills/` | Qoder global skills |
+| `~/.augment/skills/` | Augment global skills |
+| `~/.opencode/skills/` | OpenCode global skills |
+| `~/.kilocode/skills/` | KiloCode global skills |
+| `~/.ob1/skills/` | OB1 global skills |
+| `~/.amp/skills/` | Amp global skills |
+| `~/.kiro/skills/` | Kiro global skills |
+| `~/.codebuddy/skills/` | CodeBuddy global skills |
+| `~/.hermes/skills/` | Hermes global skills |
+| `~/.copilot/skills/` | Copilot global skills |
+| `~/.aider/skills/` | Aider global skills |
+| `~/.qclaw/skills/` | QClaw global skills |
+| `~/.easyclaw/skills/` | EasyClaw global skills |
+| `~/.easyclaw-20260322-01/skills/` | EasyClaw V2 global skills |
+| `~/.openclaw-autoclaw/skills/` | AutoClaw global skills |
+| `~/.workbuddy/skills-marketplace/skills/` | WorkBuddy global skills |
 | `~/.skillsmanage/` | App data (SQLite db) |
 
 ## Theming

@@ -235,6 +235,25 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
+    // discovered_skills table — skills found in project-level directories
+    // during a "discover project skills" scan.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS discovered_skills (
+            id             TEXT PRIMARY KEY,
+            name           TEXT NOT NULL,
+            description    TEXT,
+            file_path      TEXT NOT NULL,
+            dir_path       TEXT NOT NULL,
+            project_path   TEXT NOT NULL,
+            project_name   TEXT NOT NULL,
+            platform_id    TEXT NOT NULL,
+            discovered_at  TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
     // Seed built-in agents (INSERT OR IGNORE so repeated init is safe)
     seed_builtin_agents(pool).await?;
 
@@ -294,6 +313,7 @@ async fn seed_builtin_scan_directories(pool: &DbPool) -> Result<(), String> {
 pub fn builtin_agents() -> Vec<Agent> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     vec![
+        // ── Coding platforms ─────────────────────────────────────────────────
         Agent {
             id: "claude-code".to_string(),
             display_name: "Claude Code".to_string(),
@@ -361,6 +381,172 @@ pub fn builtin_agents() -> Vec<Agent> {
             is_enabled: true,
         },
         Agent {
+            id: "junie".to_string(),
+            display_name: "Junie".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.junie/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("junie".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "qwen".to_string(),
+            display_name: "Qwen".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.qwen/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("qwen".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "trae-cn".to_string(),
+            display_name: "Trae CN".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.trae-cn/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("trae-cn".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "windsurf".to_string(),
+            display_name: "Windsurf".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.windsurf/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("windsurf".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "qoder".to_string(),
+            display_name: "Qoder".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.qoder/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("qoder".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "augment".to_string(),
+            display_name: "Augment".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.augment/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("augment".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "opencode".to_string(),
+            display_name: "OpenCode".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.opencode/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("opencode".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "kilocode".to_string(),
+            display_name: "KiloCode".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.kilocode/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("kilocode".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "ob1".to_string(),
+            display_name: "OB1".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.ob1/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("ob1".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "amp".to_string(),
+            display_name: "Amp".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.amp/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("amp".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "kiro".to_string(),
+            display_name: "Kiro".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.kiro/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("kiro".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "codebuddy".to_string(),
+            display_name: "CodeBuddy".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.codebuddy/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("codebuddy".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "hermes".to_string(),
+            display_name: "Hermes".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.hermes/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("hermes".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "copilot".to_string(),
+            display_name: "Copilot".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.copilot/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("copilot".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "aider".to_string(),
+            display_name: "Aider".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: format!("{}/.aider/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("aider".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        // ── Lobster platforms ────────────────────────────────────────────────
+        Agent {
             id: "openclaw".to_string(),
             display_name: "OpenClaw".to_string(),
             category: "lobster".to_string(),
@@ -394,16 +580,39 @@ pub fn builtin_agents() -> Vec<Agent> {
             is_enabled: true,
         },
         Agent {
-            id: "workbuddy".to_string(),
-            display_name: "AutoClaw/WorkBuddy".to_string(),
+            id: "easyclaw-v2".to_string(),
+            display_name: "EasyClaw V2".to_string(),
             category: "lobster".to_string(),
-            global_skills_dir: format!("{}/.workbuddy/skills", home),
+            global_skills_dir: format!("{}/.easyclaw-20260322-01/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("easyclaw".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "autoclaw".to_string(),
+            display_name: "AutoClaw".to_string(),
+            category: "lobster".to_string(),
+            global_skills_dir: format!("{}/.openclaw-autoclaw/skills", home),
+            project_skills_dir: None,
+            icon_name: Some("autoclaw".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
+        Agent {
+            id: "workbuddy".to_string(),
+            display_name: "WorkBuddy".to_string(),
+            category: "lobster".to_string(),
+            global_skills_dir: format!("{}/.workbuddy/skills-marketplace/skills", home),
             project_skills_dir: None,
             icon_name: Some("workbuddy".to_string()),
             is_detected: false,
             is_builtin: true,
             is_enabled: true,
         },
+        // ── Central Skills ────────────────────────────────────────────────────
         Agent {
             id: "central".to_string(),
             display_name: "Central Skills".to_string(),
@@ -1025,6 +1234,109 @@ pub async fn toggle_scan_directory(
         .map_err(|e| e.to_string())
 }
 
+// ─── Discovered Skills ────────────────────────────────────────────────────────
+
+/// A skill discovered in a project-level directory during a full-disk scan.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DiscoveredSkillRow {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub file_path: String,
+    pub dir_path: String,
+    pub project_path: String,
+    pub project_name: String,
+    pub platform_id: String,
+    pub discovered_at: String,
+}
+
+/// Insert a discovered skill record.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_discovered_skill(
+    pool: &DbPool,
+    id: &str,
+    name: &str,
+    description: Option<&str>,
+    file_path: &str,
+    dir_path: &str,
+    project_path: &str,
+    project_name: &str,
+    platform_id: &str,
+    discovered_at: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO discovered_skills
+         (id, name, description, file_path, dir_path, project_path, project_name, platform_id, discovered_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(description)
+    .bind(file_path)
+    .bind(dir_path)
+    .bind(project_path)
+    .bind(project_name)
+    .bind(platform_id)
+    .bind(discovered_at)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Retrieve a discovered skill by its qualified ID.
+pub async fn get_discovered_skill_by_id(
+    pool: &DbPool,
+    id: &str,
+) -> Result<Option<DiscoveredSkillRow>, String> {
+    sqlx::query_as::<_, DiscoveredSkillRow>(
+        "SELECT * FROM discovered_skills WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Retrieve all discovered skills.
+pub async fn get_all_discovered_skills(pool: &DbPool) -> Result<Vec<DiscoveredSkillRow>, String> {
+    sqlx::query_as::<_, DiscoveredSkillRow>(
+        "SELECT * FROM discovered_skills ORDER BY project_name, platform_id, name",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Delete a discovered skill by ID.
+pub async fn delete_discovered_skill(pool: &DbPool, id: &str) -> Result<(), String> {
+    sqlx::query("DELETE FROM discovered_skills WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Clear all discovered skills.
+pub async fn clear_all_discovered_skills(pool: &DbPool) -> Result<(), String> {
+    sqlx::query("DELETE FROM discovered_skills")
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Get count of discovered projects (distinct project_path values).
+pub async fn get_discovered_project_count(pool: &DbPool) -> Result<i64, String> {
+    let row = sqlx::query("SELECT COUNT(DISTINCT project_path) AS cnt FROM discovered_skills")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    row.try_get::<i64, _>("cnt").map_err(|e| e.to_string())
+}
+
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
 /// Get a setting value by key.
@@ -1102,19 +1414,39 @@ mod tests {
     async fn test_builtin_agents_seeded() {
         let pool = setup_test_db().await;
         let agents = get_all_agents(&pool).await.unwrap();
-        assert_eq!(agents.len(), 11, "Should have exactly 11 built-in agents");
+        assert_eq!(agents.len(), 28, "Should have exactly 28 built-in agents");
 
         let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+        // Coding platforms
         assert!(ids.contains(&"claude-code"));
         assert!(ids.contains(&"codex"));
         assert!(ids.contains(&"cursor"));
         assert!(ids.contains(&"gemini-cli"));
         assert!(ids.contains(&"trae"));
         assert!(ids.contains(&"factory-droid"));
+        assert!(ids.contains(&"junie"));
+        assert!(ids.contains(&"qwen"));
+        assert!(ids.contains(&"trae-cn"));
+        assert!(ids.contains(&"windsurf"));
+        assert!(ids.contains(&"qoder"));
+        assert!(ids.contains(&"augment"));
+        assert!(ids.contains(&"opencode"));
+        assert!(ids.contains(&"kilocode"));
+        assert!(ids.contains(&"ob1"));
+        assert!(ids.contains(&"amp"));
+        assert!(ids.contains(&"kiro"));
+        assert!(ids.contains(&"codebuddy"));
+        assert!(ids.contains(&"hermes"));
+        assert!(ids.contains(&"copilot"));
+        assert!(ids.contains(&"aider"));
+        // Lobster platforms
         assert!(ids.contains(&"openclaw"));
         assert!(ids.contains(&"qclaw"));
         assert!(ids.contains(&"easyclaw"));
+        assert!(ids.contains(&"easyclaw-v2"));
+        assert!(ids.contains(&"autoclaw"));
         assert!(ids.contains(&"workbuddy"));
+        // Central
         assert!(ids.contains(&"central"));
     }
 
@@ -1132,7 +1464,7 @@ mod tests {
         let pool = setup_test_db().await;
         init_database(&pool).await.unwrap(); // Call a second time
         let agents = get_all_agents(&pool).await.unwrap();
-        assert_eq!(agents.len(), 11, "Reinit must not duplicate agents");
+        assert_eq!(agents.len(), 28, "Reinit must not duplicate agents");
     }
 
     // ── Skills ────────────────────────────────────────────────────────────────
@@ -1339,7 +1671,7 @@ mod tests {
         insert_custom_agent(&pool, &custom).await.unwrap();
 
         let all = get_all_agents(&pool).await.unwrap();
-        assert_eq!(all.len(), 12, "Should have 11 builtins + 1 custom");
+        assert_eq!(all.len(), 29, "Should have 28 builtins + 1 custom");
 
         let retrieved = get_agent_by_id(&pool, "my-custom-agent")
             .await
@@ -1375,6 +1707,40 @@ mod tests {
         let pool = setup_test_db().await;
         let result = delete_custom_agent(&pool, "claude-code").await;
         assert!(result.is_err(), "Should not be able to delete built-in agent");
+    }
+
+    #[tokio::test]
+    async fn test_workbuddy_scans_correct_directory() {
+        let pool = setup_test_db().await;
+        let wb = get_agent_by_id(&pool, "workbuddy")
+            .await
+            .unwrap()
+            .expect("WorkBuddy agent should exist");
+        assert_eq!(wb.display_name, "WorkBuddy");
+        assert!(
+            wb.global_skills_dir.contains(".workbuddy/skills-marketplace/skills"),
+            "WorkBuddy should scan ~/.workbuddy/skills-marketplace/skills, got: {}",
+            wb.global_skills_dir
+        );
+    }
+
+    #[tokio::test]
+    async fn test_autoclaw_is_separate_from_workbuddy() {
+        let pool = setup_test_db().await;
+        let ac = get_agent_by_id(&pool, "autoclaw")
+            .await
+            .unwrap()
+            .expect("AutoClaw agent should exist");
+        assert_eq!(ac.display_name, "AutoClaw");
+        assert_eq!(ac.category, "lobster");
+        assert!(
+            ac.global_skills_dir.contains(".openclaw-autoclaw/skills"),
+            "AutoClaw should scan ~/.openclaw-autoclaw/skills, got: {}",
+            ac.global_skills_dir
+        );
+        // Verify AutoClaw and WorkBuddy are distinct entries
+        assert_ne!(ac.id, "workbuddy");
+        assert_ne!(ac.global_skills_dir, get_agent_by_id(&pool, "workbuddy").await.unwrap().unwrap().global_skills_dir);
     }
 
     // ── Collections ───────────────────────────────────────────────────────────
