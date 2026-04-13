@@ -268,6 +268,22 @@
     "createHint": "Create a skill directory at",
     "goToSettings": "Go to Settings"
   },
+  "globalSearch": {
+    "title": "Command Palette",
+    "description": "Search for skills, collections, and actions",
+    "trigger": "Search skills...",
+    "placeholder": "Search skills, collections, actions...",
+    "noResults": "No results found.",
+    "centralSkills": "Central Skills",
+    "discovered": "Discovered",
+    "collections": "Collections",
+    "platforms": "Platforms",
+    "actions": "Actions",
+    "actionRescan": "Rescan all skills",
+    "actionNewCollection": "Create new collection",
+    "actionDiscover": "Open Discover scan",
+    "skillDetail": "Skill Detail"
+  },
   "discover": {
     "title": "Discover Project Skills",
     "desc": "Scan your project directories for skills not yet managed by skills-manage.",

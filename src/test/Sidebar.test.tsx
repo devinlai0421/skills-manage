@@ -112,60 +112,57 @@ describe("Sidebar", () => {
 
   // ── Rendering ─────────────────────────────────────────────────────────────
 
-  it("renders the app title", () => {
-    renderSidebar();
-    expect(screen.getByText("skills-manage")).toBeInTheDocument();
+  it("renders icon-only sidebar with fixed width", () => {
+    const { container } = renderSidebar();
+    const nav = container.querySelector("nav");
+    expect(nav?.className).toContain("w-14");
   });
 
-  it("renders By Tool section header", () => {
+  it("renders platform agents as icon buttons", () => {
     renderSidebar();
-    expect(screen.getByText("按工具")).toBeInTheDocument();
+    // Should show platform agents as buttons with title tooltips (not the central one)
+    expect(screen.getByRole("button", { name: /Claude Code/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Cursor/ })).toBeInTheDocument();
   });
 
-  it("renders platform agents in By Tool section", () => {
+  it("renders Central Skills icon button", () => {
     renderSidebar();
-    // Should show platform agents (not the central one)
-    expect(screen.getByText("Claude Code")).toBeInTheDocument();
-    expect(screen.getByText("Cursor")).toBeInTheDocument();
-    // Central should not appear in By Tool
-    // (it's rendered as a separate "Central Skills" nav item, not in By Tool)
+    expect(screen.getByRole("button", { name: /中央技能库/ })).toBeInTheDocument();
   });
 
-  it("shows skill count badges for each platform", () => {
+  it("renders Collections icon button", () => {
     renderSidebar();
-    // Claude Code has 5, Cursor has 3
-    expect(screen.getByText("5")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument();
+    // Use exact string match to avoid also matching "导入技能集"
+    expect(screen.getByRole("button", { name: "技能集" })).toBeInTheDocument();
   });
 
-  it("renders Central Skills nav item", () => {
+  it("renders new collection button", () => {
     renderSidebar();
-    expect(screen.getByText("中央技能库")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /新建技能集/ })).toBeInTheDocument();
   });
 
-  it("shows Central Skills count badge", () => {
+  it("renders import collection button", () => {
     renderSidebar();
-    expect(screen.getByText("10")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /导入技能集/i })).toBeInTheDocument();
   });
 
-  it("renders Collections section", () => {
+  it("does not render Settings (moved to TopBar)", () => {
     renderSidebar();
-    expect(screen.getByText("技能集")).toBeInTheDocument();
+    // Settings button no longer exists in sidebar
+    expect(screen.queryByRole("button", { name: /设置/ })).not.toBeInTheDocument();
   });
 
-  it("renders '+新建' button in Collections section", () => {
+  it("does not render text labels or section headers", () => {
     renderSidebar();
-    expect(screen.getByText("+ 新建")).toBeInTheDocument();
-  });
-
-  it("renders Settings link at bottom", () => {
-    renderSidebar();
-    expect(screen.getByText("设置")).toBeInTheDocument();
+    // No "By Tool" header
+    expect(screen.queryByText("按工具")).not.toBeInTheDocument();
+    // No "+新建" text button
+    expect(screen.queryByText("+ 新建")).not.toBeInTheDocument();
   });
 
   // ── Loading State ─────────────────────────────────────────────────────────
 
-  it("shows loading indicator when isLoading is true", () => {
+  it("shows loading spinner when isLoading is true", () => {
     vi.mocked(usePlatformStore).mockReturnValue({
       ...defaultStoreState,
       isLoading: true,
@@ -175,10 +172,12 @@ describe("Sidebar", () => {
         <Sidebar />
       </MemoryRouter>
     );
-    expect(screen.getByText("扫描中...")).toBeInTheDocument();
+    // Should show a spinner (Loader2 with animate-spin)
+    const spinner = document.querySelector(".animate-spin");
+    expect(spinner).toBeInTheDocument();
   });
 
-  it("hides platform list when loading", () => {
+  it("hides platform buttons when loading", () => {
     vi.mocked(usePlatformStore).mockReturnValue({
       ...defaultStoreState,
       isLoading: true,
@@ -188,7 +187,7 @@ describe("Sidebar", () => {
         <Sidebar />
       </MemoryRouter>
     );
-    expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Claude Code/ })).not.toBeInTheDocument();
   });
 
   // ── Active Route Highlighting ─────────────────────────────────────────────
@@ -196,25 +195,25 @@ describe("Sidebar", () => {
   it("highlights active platform route in sidebar", () => {
     renderSidebar("/platform/claude-code");
     const claudeButton = screen.getByRole("button", { name: /Claude Code/ });
-    // Active item should have the active class applied
-    expect(claudeButton.className).toContain("font-medium");
+    // Active item should have the active class (bg-primary/20)
+    expect(claudeButton.className).toContain("bg-primary/20");
   });
 
   it("highlights Central Skills when on /central", () => {
     renderSidebar("/central");
     const centralButton = screen.getByRole("button", { name: /中央技能库/ });
-    expect(centralButton.className).toContain("font-medium");
+    expect(centralButton.className).toContain("bg-primary/20");
   });
 
-  it("highlights Settings when on /settings", () => {
+  it("does not highlight Settings in sidebar (moved to TopBar)", () => {
     renderSidebar("/settings");
-    const settingsButton = screen.getByRole("button", { name: /设置/ });
-    expect(settingsButton.className).toContain("font-medium");
+    // No settings button in sidebar anymore
+    expect(screen.queryByRole("button", { name: /设置/ })).not.toBeInTheDocument();
   });
 
   // ── Empty States ──────────────────────────────────────────────────────────
 
-  it("shows empty message when no platforms are detected", () => {
+  it("shows no platform buttons when only central agent exists", () => {
     vi.mocked(usePlatformStore).mockReturnValue({
       ...defaultStoreState,
       agents: [
@@ -234,7 +233,7 @@ describe("Sidebar", () => {
         <Sidebar />
       </MemoryRouter>
     );
-    expect(screen.getByText("没有检测到平台")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Claude Code/ })).not.toBeInTheDocument();
   });
 
   // ── Navigation ────────────────────────────────────────────────────────────
@@ -243,7 +242,6 @@ describe("Sidebar", () => {
     renderSidebar();
     const claudeButton = screen.getByRole("button", { name: /Claude Code/ });
     expect(claudeButton).not.toBeDisabled();
-    // Just verify it can be clicked without throwing
     fireEvent.click(claudeButton);
   });
 
@@ -256,7 +254,7 @@ describe("Sidebar", () => {
 
   // ── Collections ───────────────────────────────────────────────────────────
 
-  it("shows collection names when collections are loaded", () => {
+  it("collections button navigates to first collection when collections exist", () => {
     vi.mocked(useCollectionStore).mockImplementation((selector) =>
       selector({
         ...defaultCollectionState,
@@ -267,8 +265,8 @@ describe("Sidebar", () => {
       })
     );
     renderSidebar();
-    expect(screen.getByRole("button", { name: "Frontend" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Backend" })).toBeInTheDocument();
+    // The collections icon button should be present (exact match to avoid "导入技能集")
+    expect(screen.getByRole("button", { name: "技能集" })).toBeInTheDocument();
   });
 
   it("highlights active collection route", () => {
@@ -286,54 +284,22 @@ describe("Sidebar", () => {
         <Sidebar />
       </MemoryRouter>
     );
-    const colButton = screen.getByRole("button", { name: "Frontend" });
-    expect(colButton.className).toContain("font-medium");
-  });
-
-  it("renders import button in Collections section", () => {
-    renderSidebar();
-    expect(screen.getByRole("button", { name: /导入技能集/i })).toBeInTheDocument();
-  });
-
-  // ── Collapse Toggle ───────────────────────────────────────────────────────
-
-  it("renders a collapse toggle button", () => {
-    renderSidebar();
-    expect(screen.getByRole("button", { name: /折叠侧边栏/i })).toBeInTheDocument();
-  });
-
-  it("collapses sidebar when toggle button is clicked", () => {
-    renderSidebar();
-    const toggleBtn = screen.getByRole("button", { name: /折叠侧边栏/i });
-    fireEvent.click(toggleBtn);
-    // After collapse, the expand button should appear
-    expect(screen.getByRole("button", { name: /展开侧边栏/i })).toBeInTheDocument();
-  });
-
-  it("expands sidebar when expand button is clicked after collapse", () => {
-    renderSidebar();
-    // Collapse
-    fireEvent.click(screen.getByRole("button", { name: /折叠侧边栏/i }));
-    // Expand again
-    fireEvent.click(screen.getByRole("button", { name: /展开侧边栏/i }));
-    // Should show collapse button again
-    expect(screen.getByRole("button", { name: /折叠侧边栏/i })).toBeInTheDocument();
+    // The collections icon button should be highlighted (exact match)
+    const colButton = screen.getByRole("button", { name: "技能集" });
+    expect(colButton.className).toContain("bg-primary/20");
   });
 
   // ── Discover ─────────────────────────────────────────────────────────────
 
   it("renders Discover entry in sidebar", () => {
     renderSidebar();
-    // The discover entry should be present with the i18n label
     expect(screen.getByRole("button", { name: "已发现" })).toBeInTheDocument();
   });
 
-  it("shows badge with discovered skills count", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(useDiscoverStore).mockImplementation((selector: any) =>
-      selector({ ...defaultDiscoverState, totalSkillsFound: 5 })
-    );
+  // ── Collapse Toggle ───────────────────────────────────────────────────────
+
+  it("renders collapse toggle button", () => {
     renderSidebar();
-    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /展开侧边栏/i })).toBeInTheDocument();
   });
 });

@@ -163,7 +163,7 @@ function ScanRootRow({
   onToggle: (enabled: boolean) => void;
 }) {
   return (
-    <div className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-muted/50">
+    <div className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-hover-bg/20 cursor-pointer">
       <Checkbox
         checked={root.enabled}
         onCheckedChange={(checked) => onToggle(!!checked)}

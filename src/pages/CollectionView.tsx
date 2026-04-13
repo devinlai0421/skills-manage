@@ -32,7 +32,7 @@ interface SkillRowProps {
 function SkillRow({ skill, onRemove }: SkillRowProps) {
   const { t } = useTranslation();
   return (
-    <div className="flex items-center gap-3 py-2.5 px-4 border-b border-border/50 last:border-0 hover:bg-muted/30 transition-colors group">
+    <div className="flex items-center gap-3 py-2.5 px-4 border-b border-border/50 last:border-0 hover:bg-hover-bg/15 transition-colors group cursor-pointer">
       <BookOpen className="size-4 text-muted-foreground shrink-0" />
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium truncate">{skill.name}</div>

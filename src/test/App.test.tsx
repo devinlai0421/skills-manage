@@ -68,7 +68,7 @@ vi.mock("../stores/centralSkillsStore", () => ({
 }));
 
 describe("App", () => {
-  it("renders the app shell with sidebar", async () => {
+  it("renders the app shell with top bar", async () => {
     await act(async () => {
       render(
         <MemoryRouter initialEntries={["/central"]}>
@@ -76,11 +76,11 @@ describe("App", () => {
         </MemoryRouter>
       );
     });
-    // Sidebar header is visible
+    // TopBar shows the app name
     expect(screen.getByText("skills-manage")).toBeInTheDocument();
   });
 
-  it("renders sidebar navigation sections", async () => {
+  it("renders sidebar with icon-only navigation", async () => {
     await act(async () => {
       render(
         <MemoryRouter initialEntries={["/central"]}>
@@ -88,10 +88,9 @@ describe("App", () => {
         </MemoryRouter>
       );
     });
-    expect(screen.getByText("按工具")).toBeInTheDocument();
-    // "中央技能库" appears in both the sidebar nav button and the main content header
+    // "中央技能库" appears as icon button tooltip in sidebar + possibly in main content header
     expect(screen.getAllByText("中央技能库").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("技能集")).toBeInTheDocument();
-    expect(screen.getByText("设置")).toBeInTheDocument();
+    // Icon-only sidebar has no "By Tool" section header
+    expect(screen.queryByText("按工具")).not.toBeInTheDocument();
   });
 });

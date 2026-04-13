@@ -127,7 +127,7 @@ export function CollectionPickerDialog({
                       className={
                         isAlreadyMember
                           ? "flex items-start gap-2.5 px-2 py-1.5 rounded opacity-50 cursor-not-allowed"
-                          : "flex items-start gap-2.5 px-2 py-1.5 rounded hover:bg-muted/50 cursor-pointer"
+                          : "flex items-start gap-2.5 px-2 py-1.5 rounded hover:bg-hover-bg/20 cursor-pointer"
                       }
                       onClick={() => {
                         if (!isAlreadyMember) {

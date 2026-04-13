@@ -268,6 +268,22 @@
     "createHint": "在此目录创建一个技能：",
     "goToSettings": "前往设置"
   },
+  "globalSearch": {
+    "title": "命令面板",
+    "description": "搜索技能、技能集和操作",
+    "trigger": "搜索技能...",
+    "placeholder": "搜索技能、技能集、操作...",
+    "noResults": "未找到结果。",
+    "centralSkills": "中央技能库",
+    "discovered": "已发现",
+    "collections": "技能集",
+    "platforms": "平台",
+    "actions": "操作",
+    "actionRescan": "重新扫描所有技能",
+    "actionNewCollection": "新建技能集",
+    "actionDiscover": "打开发现扫描",
+    "skillDetail": "技能详情"
+  },
   "discover": {
     "title": "发现项目技能",
     "desc": "扫描您的项目目录，查找尚未被 skills-manage 管理的技能。",
