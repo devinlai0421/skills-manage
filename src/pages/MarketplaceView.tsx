@@ -1169,6 +1169,9 @@ export function MarketplaceView() {
           setGitHubRepoUrl("");
         }}
         launcherLabel={t("marketplace.title")}
+        onOpenCentral={() => {
+          setActiveTab("my-sources");
+        }}
       />
     </div>
   );

@@ -423,12 +423,33 @@
     "reviewImportSelection": "检查导入内容",
     "confirmImportTitle": "确认导入",
     "confirmImportDesc": "将 {{count}} 个选中的技能导入到规范的中央技能库。",
+    "githubImportBackToPreview": "返回预览修改",
+    "githubImportDecision": {
+      "import": "准备导入",
+      "skip": "已跳过",
+      "overwrite": "将覆盖",
+      "rename": "将重命名"
+    },
+    "githubImportReadyListTitle": "即将导入的技能",
+    "githubImportReadyListDesc": "最后确认哪些技能会写入中央技能库。",
+    "githubImportConflictSummaryTitle": "冲突决策汇总",
+    "githubImportDecisionNone": "这一组目前没有技能。",
+    "githubImportConfirmCalmHint": "如果还想修改选择或冲突处理，先返回预览调整，再回来确认导入。",
     "resolveConflictsBeforeImport": "请先处理所有已选技能的冲突再继续导入。",
     "githubImportSuccessTitle": "导入完成",
     "githubImportSuccessDesc": "已将 {{count}} 个技能导入中央技能库。现在你可以把任意已导入技能安装到指定平台。",
     "githubImportSkipped": "已跳过 {{count}} 个技能。",
     "githubImportCentralSuccess": "GitHub 仓库技能已导入中央技能库",
     "githubImportInstallImportedSkill": "安装到平台",
+    "githubImportResultInstalledReady": "可继续安装",
+    "githubImportResultImportedTitle": "已导入技能",
+    "githubImportResultNextTitle": "下一步操作",
+    "githubImportResultNextDesc": "仓库导入已经完成，现在可以继续执行下一步操作。",
+    "githubImportResultActionInstall": "把已导入技能安装到平台",
+    "githubImportResultActionCentral": "打开中央技能库",
+    "githubImportResultActionRestart": "开始新的导入",
+    "githubImportResultSkippedTitle": "已跳过项目",
+    "githubImportResultSkippedNone": "没有跳过任何技能。",
     "githubPatSettingsHint": "请前往设置并保存 GitHub Personal Access Token，让该导入流程改用经过认证的直连 GitHub 请求。"
   }
 }

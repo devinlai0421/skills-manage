@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
+  ArrowLeft,
+  ArrowRight,
   CheckCircle2,
   ExternalLink,
   GitBranch,
   Loader2,
+  PartyPopper,
   RefreshCw,
   Sparkles,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import {
   DuplicateResolution,
   GitHubRepoImportResult,
@@ -57,6 +61,7 @@ interface GitHubRepoImportWizardProps {
     method: "symlink" | "copy"
   ) => Promise<void>;
   onAfterImportSuccess?: (result: GitHubRepoImportResult) => Promise<void> | void;
+  onOpenCentral?: () => void;
 }
 
 function buildInitialSelections(preview: GitHubRepoPreview | null): Record<string, SelectionState> {
@@ -99,8 +104,10 @@ export function GitHubRepoImportWizard({
   installableSkills = [],
   onInstallImportedSkill,
   onAfterImportSuccess,
+  onOpenCentral,
 }: GitHubRepoImportWizardProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [step, setStep] = useState<WizardStep>("input");
   const [selectionState, setSelectionState] = useState<Record<string, SelectionState>>({});
   const [postImportTargetSkillId, setPostImportTargetSkillId] = useState<string | null>(null);
@@ -185,6 +192,55 @@ export function GitHubRepoImportWizard({
     });
   }, [selectedSkills, selectionState]);
 
+  const skippedPreviewSkills = useMemo(
+    () => (preview ? preview.skills.filter((skill) => !selectionState[skill.sourcePath]?.selected) : []),
+    [preview, selectionState]
+  );
+
+  const decisionCounts = useMemo(() => {
+    const counts: Record<DuplicateResolution | "import", number> = {
+      import: 0,
+      overwrite: 0,
+      skip: 0,
+      rename: 0,
+    };
+
+    selectedSkills.forEach((skill) => {
+      counts.import += 1;
+      const state = selectionState[skill.sourcePath];
+      if (skill.conflict) {
+        counts[state?.resolution ?? "skip"] += 1;
+      }
+    });
+
+    counts.skip += skippedPreviewSkills.length;
+    return counts;
+  }, [selectedSkills, selectionState, skippedPreviewSkills.length]);
+
+  const renamedSelections = useMemo(
+    () =>
+      selectedSkills.filter(
+        (skill) => selectionState[skill.sourcePath]?.resolution === "rename"
+      ),
+    [selectedSkills, selectionState]
+  );
+
+  const overwriteSelections = useMemo(
+    () =>
+      selectedSkills.filter(
+        (skill) => skill.conflict && selectionState[skill.sourcePath]?.resolution === "overwrite"
+      ),
+    [selectedSkills, selectionState]
+  );
+
+  const skippedConflictSelections = useMemo(
+    () =>
+      selectedSkills.filter(
+        (skill) => skill.conflict && selectionState[skill.sourcePath]?.resolution === "skip"
+      ),
+    [selectedSkills, selectionState]
+  );
+
   function updateSelection(skill: GitHubSkillPreview, next: Partial<SelectionState>) {
     setSelectionState((current) => ({
       ...current,
@@ -228,6 +284,20 @@ export function GitHubRepoImportWizard({
     if (!onInstallImportedSkill) return;
     await onInstallImportedSkill(skillId, agentIds, method);
     setPostImportTargetSkillId(null);
+  }
+
+  function handleStartAnotherImport() {
+    setSelectionState({});
+    setPostImportTargetSkillId(null);
+    setSelectedSkillPath(null);
+    onReset();
+    setStep("input");
+  }
+
+  function handleOpenCentralClick() {
+    onOpenCentral?.();
+    handleClose(false);
+    navigate("/central");
   }
 
   return (
@@ -319,32 +389,291 @@ export function GitHubRepoImportWizard({
         >
           {preview ? (
             step === "confirm" ? (
-              <div className="space-y-3 rounded-xl border border-border/70 bg-card/80 p-4">
-                <div className="text-sm font-semibold">{t("marketplace.confirmImportTitle")}</div>
-                <div className="text-sm text-muted-foreground">
-                  {t("marketplace.confirmImportDesc", { count: selectedSkills.length })}
-                </div>
-                <ul className="space-y-2 text-sm">
-                  {selectedSkills.map((skill) => {
-                    const state = selectionState[skill.sourcePath];
-                    return (
-                      <li key={skill.sourcePath} className="flex items-center justify-between gap-3">
-                        <span>{skill.skillName}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {t(`marketplace.duplicateResolution.${state?.resolution ?? "overwrite"}`)}
-                          {state?.resolution === "rename" && state.renamedSkillId
-                            ? ` → ${state.renamedSkillId}`
-                            : ""}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
-                {blockingConflict ? (
-                  <div className="text-sm text-destructive">
-                    {t("marketplace.resolveConflictsBeforeImport")}
+              <div className="space-y-5" data-testid="github-import-confirm-summary">
+                <div className="rounded-xl border border-border/70 bg-card/80 p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm font-semibold">
+                        {t("marketplace.confirmImportTitle")}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {t("marketplace.confirmImportDesc", { count: selectedSkills.length })}
+                      </div>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => setStep("preview")}>
+                      <ArrowLeft className="size-4" />
+                      <span>{t("marketplace.githubImportBackToPreview")}</span>
+                    </Button>
                   </div>
-                ) : null}
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    {(
+                      [
+                        ["import", t("marketplace.githubImportDecision.import"), decisionCounts.import],
+                        [
+                          "skip",
+                          t("marketplace.githubImportDecision.skip"),
+                          decisionCounts.skip,
+                        ],
+                        [
+                          "overwrite",
+                          t("marketplace.githubImportDecision.overwrite"),
+                          decisionCounts.overwrite,
+                        ],
+                        [
+                          "rename",
+                          t("marketplace.githubImportDecision.rename"),
+                          decisionCounts.rename,
+                        ],
+                      ] as const
+                    ).map(([key, label, value]) => (
+                      <div
+                        key={key}
+                        className="rounded-xl border border-border/70 bg-muted/20 px-4 py-3"
+                      >
+                        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                          {label}
+                        </div>
+                        <div className="mt-2 text-2xl font-semibold">{value}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,0.95fr)]">
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-border/70 bg-card/80 p-4">
+                      <div className="text-sm font-semibold">
+                        {t("marketplace.githubImportReadyListTitle")}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {t("marketplace.githubImportReadyListDesc")}
+                      </div>
+                      <ul className="mt-4 space-y-2 text-sm">
+                        {selectedSkills.map((skill) => {
+                          const state = selectionState[skill.sourcePath];
+                          const resolution = state?.resolution ?? "overwrite";
+                          return (
+                            <li
+                              key={skill.sourcePath}
+                              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/80 px-3 py-2"
+                            >
+                              <div className="min-w-0">
+                                <div className="font-medium">{skill.skillName}</div>
+                                <div className="mt-1 text-[11px] text-muted-foreground">
+                                  {skill.sourcePath}
+                                </div>
+                              </div>
+                              <div className="text-right text-xs text-muted-foreground">
+                                <div>{t(`marketplace.duplicateResolution.${resolution}`)}</div>
+                                {resolution === "rename" && state?.renamedSkillId ? (
+                                  <div className="mt-1 font-medium text-foreground">
+                                    → {state.renamedSkillId}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-border/70 bg-card/80 p-4">
+                      <div className="text-sm font-semibold">
+                        {t("marketplace.githubImportConflictSummaryTitle")}
+                      </div>
+                      <div className="mt-3 space-y-3 text-sm">
+                        <div>
+                          <div className="font-medium">
+                            {t("marketplace.githubImportDecision.overwrite")}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {overwriteSelections.length > 0
+                              ? overwriteSelections.map((skill) => skill.skillName).join(", ")
+                              : t("marketplace.githubImportDecisionNone")}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="font-medium">
+                            {t("marketplace.githubImportDecision.rename")}
+                          </div>
+                          <div className="mt-1 space-y-1 text-xs text-muted-foreground">
+                            {renamedSelections.length > 0 ? (
+                              renamedSelections.map((skill) => {
+                                const renamedSkillId =
+                                  selectionState[skill.sourcePath]?.renamedSkillId;
+                                return (
+                                  <div key={skill.sourcePath}>
+                                    {skill.skillName} → {renamedSkillId}
+                                  </div>
+                                );
+                              })
+                            ) : (
+                              <div>{t("marketplace.githubImportDecisionNone")}</div>
+                            )}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="font-medium">
+                            {t("marketplace.githubImportDecision.skip")}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {skippedConflictSelections.length > 0 || skippedPreviewSkills.length > 0
+                              ? [
+                                  ...skippedConflictSelections.map((skill) => skill.skillName),
+                                  ...skippedPreviewSkills.map((skill) => skill.skillName),
+                                ].join(", ")
+                              : t("marketplace.githubImportDecisionNone")}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {blockingConflict ? (
+                      <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+                        {t("marketplace.resolveConflictsBeforeImport")}
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm text-muted-foreground">
+                        {t("marketplace.githubImportConfirmCalmHint")}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : step === "result" && importResult ? (
+              <div className="space-y-5" data-testid="github-import-result-hub">
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5">
+                  <div className="flex items-start gap-3">
+                    <div className="rounded-full bg-emerald-500/10 p-2 text-emerald-700 dark:text-emerald-300">
+                      <PartyPopper className="size-5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2 text-emerald-700 dark:text-emerald-300">
+                        <div className="text-base font-semibold">
+                          {t("marketplace.githubImportSuccessTitle")}
+                        </div>
+                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium">
+                          {importResult.repo.owner}/{importResult.repo.repo}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        {t("marketplace.githubImportSuccessDesc", {
+                          count: importResult.importedSkills.length,
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {t("marketplace.githubImportDecision.import")}
+                    </div>
+                    <div className="mt-2 text-2xl font-semibold">
+                      {importResult.importedSkills.length}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {t("marketplace.githubImportDecision.skip")}
+                    </div>
+                    <div className="mt-2 text-2xl font-semibold">
+                      {importResult.skippedSkills.length}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {t("marketplace.githubImportResultInstalledReady")}
+                    </div>
+                    <div className="mt-2 text-2xl font-semibold">
+                      {importResult.importedSkills.length}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.95fr)]">
+                  <div className="rounded-xl border border-border/70 bg-card/80 p-4">
+                    <div className="text-sm font-semibold">
+                      {t("marketplace.githubImportResultImportedTitle")}
+                    </div>
+                    <ul className="mt-4 space-y-2 text-sm">
+                      {importResult.importedSkills.map((skill) => (
+                        <li
+                          key={`${skill.sourcePath}-${skill.importedSkillId}`}
+                          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/80 px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-medium">{skill.skillName}</div>
+                            <code className="mt-1 inline-flex rounded bg-muted px-2 py-1 text-[11px] text-muted-foreground">
+                              {skill.importedSkillId}
+                            </code>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs text-muted-foreground">
+                              {t(`marketplace.duplicateResolution.${skill.resolution}`)}
+                            </span>
+                            {onInstallImportedSkill ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleInstallImported(skill.importedSkillId)}
+                              >
+                                <span>{t("marketplace.githubImportInstallImportedSkill")}</span>
+                              </Button>
+                            ) : null}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-border/70 bg-card/80 p-4">
+                      <div className="text-sm font-semibold">
+                        {t("marketplace.githubImportResultNextTitle")}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {t("marketplace.githubImportResultNextDesc")}
+                      </div>
+                      <div className="mt-4 flex flex-col gap-2">
+                        {importResult.importedSkills.length > 0 && onInstallImportedSkill ? (
+                          <Button
+                            className="justify-between"
+                            onClick={() =>
+                              handleInstallImported(importResult.importedSkills[0].importedSkillId)
+                            }
+                          >
+                            <span>{t("marketplace.githubImportResultActionInstall")}</span>
+                            <ArrowRight className="size-4" />
+                          </Button>
+                        ) : null}
+                        <Button variant="outline" className="justify-between" onClick={handleOpenCentralClick}>
+                          <span>{t("marketplace.githubImportResultActionCentral")}</span>
+                          <ArrowRight className="size-4" />
+                        </Button>
+                        <Button variant="ghost" className="justify-between" onClick={handleStartAnotherImport}>
+                          <span>{t("marketplace.githubImportResultActionRestart")}</span>
+                          <RefreshCw className="size-4" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-border/70 bg-card/80 p-4">
+                      <div className="text-sm font-semibold">
+                        {t("marketplace.githubImportResultSkippedTitle")}
+                      </div>
+                      <div className="mt-3 text-xs text-muted-foreground">
+                        {importResult.skippedSkills.length > 0
+                          ? importResult.skippedSkills.join(", ")
+                          : t("marketplace.githubImportResultSkippedNone")}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="flex min-h-full flex-col gap-4">
@@ -601,48 +930,6 @@ export function GitHubRepoImportWizard({
                 </div>
               </div>
             )
-          ) : null}
-
-          {importResult ? (
-            <div className="space-y-3 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4">
-              <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
-                <CheckCircle2 className="size-5" />
-                <div className="text-sm font-semibold">{t("marketplace.githubImportSuccessTitle")}</div>
-              </div>
-              <div className="text-sm text-muted-foreground">
-                {t("marketplace.githubImportSuccessDesc", {
-                  count: importResult.importedSkills.length,
-                })}
-              </div>
-              <ul className="space-y-2 text-sm">
-                {importResult.importedSkills.map((skill) => (
-                  <li key={`${skill.sourcePath}-${skill.importedSkillId}`} className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div>{skill.skillName}</div>
-                      <code className="mt-1 inline-flex rounded bg-background px-2 py-1 text-[11px]">
-                        {skill.importedSkillId}
-                      </code>
-                    </div>
-                    {onInstallImportedSkill ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleInstallImported(skill.importedSkillId)}
-                      >
-                        <span>{t("marketplace.githubImportInstallImportedSkill")}</span>
-                      </Button>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-              {importResult.skippedSkills.length > 0 ? (
-                <div className="text-xs text-muted-foreground">
-                  {t("marketplace.githubImportSkipped", {
-                    count: importResult.skippedSkills.length,
-                  })}
-                </div>
-              ) : null}
-            </div>
           ) : null}
         </div>
 

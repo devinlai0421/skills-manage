@@ -423,12 +423,33 @@
     "reviewImportSelection": "Review import",
     "confirmImportTitle": "Confirm import",
     "confirmImportDesc": "Import {{count}} selected skill(s) into canonical Central storage.",
+    "githubImportBackToPreview": "Back to preview",
+    "githubImportDecision": {
+      "import": "Importing",
+      "skip": "Skipped",
+      "overwrite": "Overwrite",
+      "rename": "Rename"
+    },
+    "githubImportReadyListTitle": "Ready to import",
+    "githubImportReadyListDesc": "Final check of the skills that will be written into Central.",
+    "githubImportConflictSummaryTitle": "Decision summary",
+    "githubImportDecisionNone": "No skills in this group.",
+    "githubImportConfirmCalmHint": "Need to adjust selection or conflict decisions? Go back to Preview to edit before importing.",
     "resolveConflictsBeforeImport": "Resolve all selected conflicts before importing.",
     "githubImportSuccessTitle": "Import complete",
     "githubImportSuccessDesc": "{{count}} skill(s) were imported into Central. You can now install any imported skill to specific platforms.",
     "githubImportSkipped": "{{count}} skill(s) were skipped.",
     "githubImportCentralSuccess": "GitHub repo skills imported into Central",
     "githubImportInstallImportedSkill": "Install to platforms",
+    "githubImportResultInstalledReady": "Ready for install",
+    "githubImportResultImportedTitle": "Imported skills",
+    "githubImportResultNextTitle": "Next steps",
+    "githubImportResultNextDesc": "Choose what you want to do next now that the repo import is complete.",
+    "githubImportResultActionInstall": "Install imported skills to platforms",
+    "githubImportResultActionCentral": "Open Central",
+    "githubImportResultActionRestart": "Start another import",
+    "githubImportResultSkippedTitle": "Skipped items",
+    "githubImportResultSkippedNone": "No skills were skipped.",
     "githubPatSettingsHint": "Open Settings and save a GitHub Personal Access Token to use authenticated direct GitHub requests for this import flow."
   }
 }

@@ -752,6 +752,119 @@ describe("MarketplaceView", () => {
     expect(await screen.findByRole("button", { name: /Install to platforms/i })).toBeInTheDocument();
   });
 
+  it("turns confirm into a grouped summary with a clear path back to preview", async () => {
+    mockPreviewGitHubRepoImport.mockImplementation(async () => {
+      storeState.githubImport = {
+        isPreviewLoading: false,
+        isImporting: false,
+        preview: {
+          repo: {
+            owner: "anthropics",
+            repo: "skills",
+            branch: "main",
+            normalizedUrl: "https://github.com/anthropics/skills",
+          },
+          skills: [
+            {
+              sourcePath: "skills/first/SKILL.md",
+              skillId: "first-skill",
+              skillName: "First Skill",
+              description: "First skill description",
+              rootDirectory: "skills",
+              skillDirectoryName: "first",
+              downloadUrl: "https://example.com/first",
+              conflict: {
+                existingSkillId: "first-skill",
+                existingName: "First Skill",
+                existingCanonicalPath: "/Users/test/.agents/skills/first-skill",
+                proposedSkillId: "first-skill",
+                proposedName: "First Skill",
+              },
+            },
+            {
+              sourcePath: "skills/second/SKILL.md",
+              skillId: "second-skill",
+              skillName: "Second Skill",
+              description: "Second skill description",
+              rootDirectory: "skills",
+              skillDirectoryName: "second",
+              downloadUrl: "https://example.com/second",
+              conflict: null,
+            },
+          ],
+        },
+        importResult: null,
+        previewedRepoUrl: "https://github.com/anthropics/skills",
+        error: null,
+      };
+    });
+
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: "Import GitHub repo" }));
+    fireEvent.change(screen.getByLabelText("GitHub repository URL"), {
+      target: { value: "https://github.com/anthropics/skills" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview import" }));
+
+    await screen.findByText("First Skill");
+
+    fireEvent.click(screen.getByRole("radio", { name: "Rename" }));
+    fireEvent.change(screen.getByPlaceholderText("New skill id"), {
+      target: { value: "first-skill-renamed" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Review import" }));
+
+    const confirmSummary = await screen.findByTestId("github-import-confirm-summary");
+    expect(within(confirmSummary).getByText("Ready to import")).toBeInTheDocument();
+    expect(within(confirmSummary).getByText("Decision summary")).toBeInTheDocument();
+    expect(within(confirmSummary).getByText("first-skill-renamed")).toBeInTheDocument();
+    expect(within(confirmSummary).getByRole("button", { name: "Back to preview" })).toBeInTheDocument();
+    expect(screen.queryByTestId("github-import-detail-pane")).not.toBeInTheDocument();
+  });
+
+  it("turns result into a completion hub with next-step actions", async () => {
+    storeState.githubImport = {
+      isPreviewLoading: false,
+      isImporting: false,
+      preview: null,
+      importResult: {
+        repo: {
+          owner: "dorukardahan",
+          repo: "twitterapi-io-skill",
+          branch: "main",
+          normalizedUrl: "https://github.com/dorukardahan/twitterapi-io-skill",
+        },
+        importedSkills: [
+          {
+            sourcePath: "twitterapi-io-skill/SKILL.md",
+            originalSkillId: "cached-skill",
+            importedSkillId: "cached-skill",
+            skillName: "Cached Skill",
+            targetDirectory: "/Users/test/.agents/skills/cached-skill",
+            resolution: "overwrite",
+          },
+        ],
+        skippedSkills: ["legacy-skill"],
+      },
+      previewedRepoUrl: "https://github.com/dorukardahan/twitterapi-io-skill",
+      error: null,
+    };
+
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: "Import GitHub repo" }));
+
+    const resultHub = await screen.findByTestId("github-import-result-hub");
+    expect(within(resultHub).getByText("Next steps")).toBeInTheDocument();
+    expect(
+      within(resultHub).getByRole("button", { name: "Install imported skills to platforms" })
+    ).toBeInTheDocument();
+    expect(within(resultHub).getByRole("button", { name: "Open Central" })).toBeInTheDocument();
+    expect(within(resultHub).getByRole("button", { name: "Start another import" })).toBeInTheDocument();
+    expect(within(resultHub).getByText("legacy-skill")).toBeInTheDocument();
+  });
+
   it("shows a friendly desktop-only state for the github import wizard in browser mode", async () => {
     const isTauriSpy = vi.spyOn(tauriBridge, "isTauriRuntime").mockReturnValue(false);
 

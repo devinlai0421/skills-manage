@@ -483,6 +483,66 @@ describe("CentralSkillsView", () => {
     expect(await screen.findByRole("button", { name: /安装到平台/i })).toBeInTheDocument();
   });
 
+  it("shows the redesigned github confirm summary in the shared wizard", async () => {
+    mockUseMarketplaceStore.mockImplementation((selector?: unknown) => {
+      const state = {
+        githubImport: {
+          isPreviewLoading: false,
+          isImporting: false,
+          preview: {
+            repo: {
+              owner: "anthropics",
+              repo: "skills",
+              branch: "main",
+              normalizedUrl: "https://github.com/anthropics/skills",
+            },
+            skills: [
+              {
+                sourcePath: "skills/first/SKILL.md",
+                skillId: "frontend-design",
+                skillName: "frontend-design",
+                description: "First imported skill",
+                rootDirectory: "skills",
+                skillDirectoryName: "first",
+                downloadUrl: "https://example.com/first",
+                conflict: {
+                  existingSkillId: "frontend-design",
+                  existingName: "frontend-design",
+                  existingCanonicalPath: "/Users/test/.agents/skills/frontend-design",
+                  proposedSkillId: "frontend-design",
+                  proposedName: "frontend-design",
+                },
+              },
+            ],
+            importResult: null,
+            previewedRepoUrl: "https://github.com/anthropics/skills",
+            error: null,
+          },
+          previewGitHubRepoImport: mockPreviewGitHubRepoImport,
+          importGitHubRepoSkills: mockImportGitHubRepoSkills,
+          resetGitHubImport: mockResetGitHubImport,
+        },
+        previewGitHubRepoImport: mockPreviewGitHubRepoImport,
+        importGitHubRepoSkills: mockImportGitHubRepoSkills,
+        resetGitHubImport: mockResetGitHubImport,
+      };
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    render(
+      <MemoryRouter>
+        <CentralSkillsView />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /从 GitHub 导入/i }));
+    fireEvent.click(screen.getByRole("button", { name: /检查导入内容/i }));
+
+    expect(await screen.findByTestId("github-import-confirm-summary")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /返回预览修改/i })).toBeInTheDocument();
+  });
+
   it("preserves search and scroll state when closing the drawer and restores focus", async () => {
     renderCentralSkillsView();
 
