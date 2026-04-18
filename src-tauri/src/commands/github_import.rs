@@ -91,7 +91,6 @@ struct GitHubContent {
     #[serde(rename = "type")]
     content_type: String,
     path: String,
-    download_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -183,6 +182,48 @@ impl fmt::Display for GitHubAccessDenial {
 struct GitHubErrorResponse {
     message: Option<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitHubFetchSurface {
+    Api,
+    Raw,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MirrorAttemptOutcome {
+    status: Option<reqwest::StatusCode>,
+    error_message: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GitHubMirrorEndpoint {
+    label: &'static str,
+    api_base: &'static str,
+    raw_base: &'static str,
+}
+
+const GITHUB_MIRROR_ENDPOINTS: &[GitHubMirrorEndpoint] = &[
+    GitHubMirrorEndpoint {
+        label: "github",
+        api_base: "https://api.github.com",
+        raw_base: "https://raw.githubusercontent.com",
+    },
+    GitHubMirrorEndpoint {
+        label: "ghfast",
+        api_base: "https://ghfast.top/https://api.github.com",
+        raw_base: "https://ghfast.top/https://raw.githubusercontent.com",
+    },
+    GitHubMirrorEndpoint {
+        label: "ghproxy",
+        api_base: "https://ghproxy.net/https://api.github.com",
+        raw_base: "https://ghproxy.net/https://raw.githubusercontent.com",
+    },
+    GitHubMirrorEndpoint {
+        label: "gitproxy",
+        api_base: "https://mirror.ghproxy.com/https://api.github.com",
+        raw_base: "https://mirror.ghproxy.com/https://raw.githubusercontent.com",
+    },
+];
 
 #[tauri::command]
 pub async fn preview_github_repo_import(
@@ -456,12 +497,13 @@ async fn build_preview_skills(
 async fn resolve_repo_ref(repo_url: &str) -> Result<GitHubRepoRef, String> {
     let (owner, repo) = parse_github_url(repo_url)?;
     let client = github_client()?;
-    let branch_url = format!("https://api.github.com/repos/{owner}/{repo}");
-    let response = client
-        .get(&branch_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to inspect GitHub repository: {}", e))?;
+    let response = send_github_request_with_fallback(
+        &client,
+        GitHubFetchSurface::Api,
+        |endpoint| github_endpoint_url(endpoint, GitHubFetchSurface::Api, &format!("/repos/{owner}/{repo}")),
+        "Failed to inspect GitHub repository",
+    )
+    .await?;
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err("GitHub repository not found.".to_string());
@@ -549,16 +591,13 @@ async fn fetch_repo_skill_candidates_with_fixture(
         .iter()
         .any(|entry| entry.content_type == "file" && entry.name.eq_ignore_ascii_case("SKILL.md"))
     {
-        let root_skill_md = root_contents
-            .iter()
-            .find(|entry| entry.content_type == "file" && entry.name.eq_ignore_ascii_case("SKILL.md"))
-            .expect("root SKILL exists");
-        let raw_url = root_skill_md.download_url.clone().unwrap_or_else(|| {
-            format!(
-                "https://raw.githubusercontent.com/{}/{}/{}/SKILL.md",
-                repo.owner, repo.repo, repo.branch
-            )
-        });
+        let raw_url = raw_file_url(
+            GITHUB_MIRROR_ENDPOINTS
+                .first()
+                .expect("github endpoint"),
+            repo,
+            "SKILL.md",
+        );
         let skill_raw = if let Some(fixture) = fixture {
             fixture
                 .raw_files
@@ -637,12 +676,13 @@ async fn fetch_repo_skill_candidates_with_fixture(
                 continue;
             }
 
-            let raw_url = skill_md.download_url.clone().unwrap_or_else(|| {
-                format!(
-                    "https://raw.githubusercontent.com/{}/{}/{}/{}",
-                    repo.owner, repo.repo, repo.branch, skill_md.path
-                )
-            });
+            let raw_url = raw_file_url(
+                GITHUB_MIRROR_ENDPOINTS
+                    .first()
+                    .expect("github endpoint"),
+                repo,
+                &skill_md.path,
+            );
 
             let skill_raw = if let Some(fixture) = fixture {
                 fixture
@@ -708,22 +748,7 @@ async fn download_directory_recursive_with_client(
                 .ok_or_else(|| "Failed to determine imported file parent directory.".to_string())?;
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create imported file parent directory: {}", e))?;
-            let url = entry.download_url.clone().ok_or_else(|| {
-                format!(
-                    "GitHub did not return a downloadable URL for '{}'.",
-                    entry.path
-                )
-            })?;
-            let bytes = client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| format!("Failed to download '{}': {}", entry.path, e))?
-                .error_for_status()
-                .map_err(|e| format!("Failed to download '{}': {}", entry.path, e))?
-                .bytes()
-                .await
-                .map_err(|e| format!("Failed to read '{}': {}", entry.path, e))?;
+            let bytes = fetch_raw_bytes(client, repo, &entry.path).await?;
             std::fs::write(&destination, &bytes)
                 .map_err(|e| format!("Failed to write imported file '{}': {}", destination.display(), e))?;
         }
@@ -768,22 +793,7 @@ async fn download_directory_recursive_with_client(
                     .ok_or_else(|| "Failed to determine imported file parent directory.".to_string())?;
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("Failed to create imported file parent directory: {}", e))?;
-                let url = entry.download_url.clone().ok_or_else(|| {
-                    format!(
-                        "GitHub did not return a downloadable URL for '{}'.",
-                        entry.path
-                    )
-                })?;
-                let bytes = client
-                    .get(&url)
-                    .send()
-                    .await
-                    .map_err(|e| format!("Failed to download '{}': {}", entry.path, e))?
-                    .error_for_status()
-                    .map_err(|e| format!("Failed to download '{}': {}", entry.path, e))?
-                    .bytes()
-                    .await
-                    .map_err(|e| format!("Failed to read '{}': {}", entry.path, e))?;
+                let bytes = fetch_raw_bytes(client, repo, &entry.path).await?;
                 std::fs::write(&destination, &bytes)
                     .map_err(|e| format!("Failed to write imported file '{}': {}", destination.display(), e))?;
             }
@@ -807,23 +817,23 @@ async fn fetch_directory_contents(
     repo: &GitHubRepoRef,
     path: &str,
 ) -> Result<Vec<GitHubContent>, String> {
-    let endpoint = if path.is_empty() {
-        format!(
-            "https://api.github.com/repos/{}/{}/contents?ref={}",
-            repo.owner, repo.repo, repo.branch
-        )
-    } else {
-        format!(
-            "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
-            repo.owner, repo.repo, path, repo.branch
-        )
-    };
-
-    let response = client
-        .get(&endpoint)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to inspect GitHub repository contents: {}", e))?;
+    let response = send_github_request_with_fallback(
+        client,
+        GitHubFetchSurface::Api,
+        |endpoint| {
+            let content_path = if path.is_empty() {
+                format!("/repos/{}/{}/contents?ref={}", repo.owner, repo.repo, repo.branch)
+            } else {
+                format!(
+                    "/repos/{}/{}/contents/{}?ref={}",
+                    repo.owner, repo.repo, path, repo.branch
+                )
+            };
+            github_endpoint_url(endpoint, GitHubFetchSurface::Api, &content_path)
+        },
+        "Failed to inspect GitHub repository contents",
+    )
+    .await?;
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(format!("GitHub repository contents path '{}' returned HTTP 404", path));
@@ -842,11 +852,19 @@ async fn fetch_directory_contents(
 }
 
 async fn fetch_raw_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to download skill metadata: {}", e))?;
+    let response = send_github_request_with_fallback(
+        client,
+        GitHubFetchSurface::Raw,
+        |endpoint| {
+            if let Some(path) = raw_url_to_repo_path(url) {
+                raw_file_url(endpoint, &path.repo, &path.file_path)
+            } else {
+                url.to_string()
+            }
+        },
+        "Failed to download skill metadata",
+    )
+    .await?;
 
     if !response.status().is_success() {
         return Err(classify_github_denial_response(response, "downloading skill metadata")
@@ -858,6 +876,193 @@ async fn fetch_raw_text(client: &reqwest::Client, url: &str) -> Result<String, S
         .text()
         .await
         .map_err(|e| format!("Failed to read skill metadata: {}", e))
+}
+
+#[derive(Debug, Clone)]
+struct RawRepoPath {
+    repo: GitHubRepoRef,
+    file_path: String,
+}
+
+fn raw_url_to_repo_path(url: &str) -> Option<RawRepoPath> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    if host != "raw.githubusercontent.com" {
+        return None;
+    }
+
+    let segments = parsed.path_segments()?;
+    let parts = segments.collect::<Vec<_>>();
+    if parts.len() < 4 {
+        return None;
+    }
+
+    Some(RawRepoPath {
+        repo: GitHubRepoRef {
+            owner: parts[0].to_string(),
+            repo: parts[1].to_string(),
+            branch: parts[2].to_string(),
+            normalized_url: format!("https://github.com/{}/{}", parts[0], parts[1]),
+        },
+        file_path: parts[3..].join("/"),
+    })
+}
+
+fn github_endpoint_url(
+    endpoint: &GitHubMirrorEndpoint,
+    surface: GitHubFetchSurface,
+    path: &str,
+) -> String {
+    let base = match surface {
+        GitHubFetchSurface::Api => endpoint.api_base,
+        GitHubFetchSurface::Raw => endpoint.raw_base,
+    };
+    format!("{}{}", base.trim_end_matches('/'), path)
+}
+
+fn raw_file_url(endpoint: &GitHubMirrorEndpoint, repo: &GitHubRepoRef, file_path: &str) -> String {
+    github_endpoint_url(
+        endpoint,
+        GitHubFetchSurface::Raw,
+        &format!(
+            "/{}/{}/{}/{}",
+            repo.owner,
+            repo.repo,
+            repo.branch,
+            file_path.trim_start_matches('/')
+        ),
+    )
+}
+
+async fn fetch_raw_bytes(
+    client: &reqwest::Client,
+    repo: &GitHubRepoRef,
+    file_path: &str,
+) -> Result<Vec<u8>, String> {
+    let response = send_github_request_with_fallback(
+        client,
+        GitHubFetchSurface::Raw,
+        |endpoint| raw_file_url(endpoint, repo, file_path),
+        &format!("Failed to download '{}'", file_path),
+    )
+    .await?;
+
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| format!("Failed to read '{}': {}", file_path, e))
+}
+
+async fn send_github_request_with_fallback<F>(
+    client: &reqwest::Client,
+    surface: GitHubFetchSurface,
+    build_url: F,
+    failure_prefix: &str,
+) -> Result<reqwest::Response, String>
+where
+    F: Fn(&GitHubMirrorEndpoint) -> String,
+{
+    let mut attempts = Vec::new();
+
+    for endpoint in GITHUB_MIRROR_ENDPOINTS {
+        let url = build_url(endpoint);
+        match client.get(url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                if matches!(
+                    status,
+                    reqwest::StatusCode::UNAUTHORIZED
+                        | reqwest::StatusCode::FORBIDDEN
+                        | reqwest::StatusCode::TOO_MANY_REQUESTS
+                ) {
+                    let denial =
+                        classify_github_denial_response(response, "contacting GitHub").await;
+                    return Err(
+                        denial.unwrap_or_else(|| format!("{}: HTTP {}", failure_prefix, status))
+                    );
+                }
+
+                if status.is_success() {
+                    return Ok(response);
+                }
+
+                if status == reqwest::StatusCode::NOT_FOUND {
+                    return Ok(response);
+                }
+
+                if should_retry_via_mirror_status(surface, status) {
+                    attempts.push(MirrorAttemptOutcome {
+                        status: Some(status),
+                        error_message: format!(
+                            "{} mirror '{}' returned HTTP {}",
+                            surface_label(surface),
+                            endpoint.label,
+                            status
+                        ),
+                    });
+                    continue;
+                }
+
+                return Err(format!("{}: HTTP {}", failure_prefix, status));
+            }
+            Err(error) => {
+                if is_retryable_github_transport_error(&error) {
+                    attempts.push(MirrorAttemptOutcome {
+                        status: error.status(),
+                        error_message: format!(
+                            "{} mirror '{}' failed: {}",
+                            surface_label(surface),
+                            endpoint.label,
+                            error
+                        ),
+                    });
+                    continue;
+                }
+
+                return Err(format!("{}: {}", failure_prefix, error));
+            }
+        }
+    }
+
+    Err(format!(
+        "{}. Direct GitHub access and built-in mirrors were unreachable. Retry later or try a different network path. Last errors: {}",
+        failure_prefix,
+        summarize_mirror_attempts(&attempts)
+    ))
+}
+
+fn should_retry_via_mirror_status(
+    surface: GitHubFetchSurface,
+    status: reqwest::StatusCode,
+) -> bool {
+    match surface {
+        GitHubFetchSurface::Api | GitHubFetchSurface::Raw => {
+            status.is_server_error()
+                || status == reqwest::StatusCode::BAD_GATEWAY
+                || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                || status == reqwest::StatusCode::GATEWAY_TIMEOUT
+        }
+    }
+}
+
+fn is_retryable_github_transport_error(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
+}
+
+fn summarize_mirror_attempts(attempts: &[MirrorAttemptOutcome]) -> String {
+    attempts
+        .iter()
+        .map(|attempt| attempt.error_message.clone())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn surface_label(surface: GitHubFetchSurface) -> &'static str {
+    match surface {
+        GitHubFetchSurface::Api => "API",
+        GitHubFetchSurface::Raw => "raw",
+    }
 }
 
 async fn classify_github_denial_response(
@@ -989,7 +1194,6 @@ mod tests {
             name: name.to_string(),
             content_type: "dir".to_string(),
             path: path.to_string(),
-            download_url: None,
         }
     }
 
@@ -998,7 +1202,6 @@ mod tests {
             name: name.to_string(),
             content_type: "file".to_string(),
             path: path.to_string(),
-            download_url: Some(format!("https://example.com/{path}")),
         }
     }
 
@@ -1108,6 +1311,57 @@ mod tests {
         assert!(message.contains("require authentication"));
         assert!(message.contains("token/permissions are insufficient"));
         assert!(message.contains("Requires authentication"));
+    }
+
+    #[test]
+    fn raw_url_to_repo_path_parses_github_raw_urls() {
+        let parsed = raw_url_to_repo_path(
+            "https://raw.githubusercontent.com/owner/repo/main/skills/demo/SKILL.md",
+        )
+        .expect("parsed");
+
+        assert_eq!(parsed.repo.owner, "owner");
+        assert_eq!(parsed.repo.repo, "repo");
+        assert_eq!(parsed.repo.branch, "main");
+        assert_eq!(parsed.file_path, "skills/demo/SKILL.md");
+    }
+
+    #[test]
+    fn raw_url_to_repo_path_ignores_non_github_raw_hosts() {
+        assert!(raw_url_to_repo_path("https://example.com/file.txt").is_none());
+    }
+
+    #[test]
+    fn mirror_status_retry_excludes_auth_denials() {
+        assert!(should_retry_via_mirror_status(
+            GitHubFetchSurface::Api,
+            reqwest::StatusCode::BAD_GATEWAY
+        ));
+        assert!(!should_retry_via_mirror_status(
+            GitHubFetchSurface::Api,
+            reqwest::StatusCode::FORBIDDEN
+        ));
+        assert!(!should_retry_via_mirror_status(
+            GitHubFetchSurface::Raw,
+            reqwest::StatusCode::TOO_MANY_REQUESTS
+        ));
+    }
+
+    #[test]
+    fn summarize_mirror_attempts_reports_all_failures() {
+        let message = summarize_mirror_attempts(&[
+            MirrorAttemptOutcome {
+                status: None,
+                error_message: "API mirror 'github' failed: timeout".to_string(),
+            },
+            MirrorAttemptOutcome {
+                status: Some(reqwest::StatusCode::BAD_GATEWAY),
+                error_message: "API mirror 'ghfast' returned HTTP 502".to_string(),
+            },
+        ]);
+
+        assert!(message.contains("timeout"));
+        assert!(message.contains("HTTP 502"));
     }
 
     #[tokio::test]
