@@ -50,6 +50,9 @@ describe("settingsStore", () => {
       scanDirectories: [],
       isLoadingScanDirs: false,
       error: null,
+      githubPat: "",
+      isLoadingGitHubPat: false,
+      isSavingGitHubPat: false,
     });
     vi.clearAllMocks();
   });
@@ -336,5 +339,42 @@ describe("settingsStore", () => {
     useSettingsStore.setState({ error: "Some error" });
     useSettingsStore.getState().clearError();
     expect(useSettingsStore.getState().error).toBeNull();
+  });
+
+  it("loadGitHubPat reads the saved github_pat setting", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(" github_pat_123 ");
+
+    await useSettingsStore.getState().loadGitHubPat();
+
+    expect(invoke).toHaveBeenCalledWith("get_setting", { key: "github_pat" });
+    expect(useSettingsStore.getState().githubPat).toBe(" github_pat_123 ");
+    expect(useSettingsStore.getState().isLoadingGitHubPat).toBe(false);
+  });
+
+  it("saveGitHubPat persists a trimmed github_pat setting", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    await useSettingsStore.getState().saveGitHubPat("  github_pat_abc  ");
+
+    expect(invoke).toHaveBeenCalledWith("set_setting", {
+      key: "github_pat",
+      value: "  github_pat_abc  ",
+    });
+    expect(useSettingsStore.getState().githubPat).toBe("github_pat_abc");
+    expect(useSettingsStore.getState().isSavingGitHubPat).toBe(false);
+  });
+
+  it("clearGitHubPat clears the saved github_pat setting", async () => {
+    useSettingsStore.setState({ githubPat: "github_pat_abc" });
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    await useSettingsStore.getState().clearGitHubPat();
+
+    expect(invoke).toHaveBeenCalledWith("set_setting", {
+      key: "github_pat",
+      value: "",
+    });
+    expect(useSettingsStore.getState().githubPat).toBe("");
+    expect(useSettingsStore.getState().isSavingGitHubPat).toBe(false);
   });
 });

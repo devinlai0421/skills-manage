@@ -77,6 +77,10 @@ function normalizeMessage(message: string) {
   return message.replace(/^Error:\s*/, "");
 }
 
+function looksLikeGitHubAuthGuidance(message: string) {
+  return /github|rate limit|personal access token|pat|settings/i.test(message);
+}
+
 export function GitHubRepoImportWizard({
   open,
   onOpenChange,
@@ -293,7 +297,14 @@ export function GitHubRepoImportWizard({
               <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
                 <div className="flex items-start gap-2">
                   <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                  <span>{normalizeMessage(previewError)}</span>
+                  <div className="space-y-2">
+                    <span className="block">{normalizeMessage(previewError)}</span>
+                    {looksLikeGitHubAuthGuidance(previewError) ? (
+                      <span className="block text-xs text-destructive/90">
+                        {t("marketplace.githubPatSettingsHint")}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             ) : null}

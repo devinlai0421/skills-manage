@@ -222,6 +222,14 @@
     "noPlatforms": "No custom platforms. Click \"Add Platform\" to register one.",
     "editPlatformLabel": "Edit platform {{name}}",
     "removePlatformLabel": "Remove platform {{name}}",
+    "githubPatTitle": "GitHub import access token",
+    "githubPatDesc": "Save a GitHub Personal Access Token for the repo import flow so you do not need to re-enter it each time.",
+    "githubPatLabel": "GitHub Personal Access Token",
+    "githubPatDirectOnly": "This token is used only for direct GitHub requests to github.com, api.github.com, and raw.githubusercontent.com. It is never sent to public mirrors or proxy fallbacks.",
+    "githubPatRateLimitHint": "Use a token when GitHub preview/import hits rate limits or requires authenticated access.",
+    "githubPatSaved": "GitHub token saved",
+    "githubPatCleared": "GitHub token cleared",
+    "githubPatClear": "Clear token",
     "about": "About",
     "appVersion": "App Version",
     "dbPath": "Database Path",
@@ -420,6 +428,7 @@
     "githubImportSuccessDesc": "{{count}} skill(s) were imported into Central. You can now install any imported skill to specific platforms.",
     "githubImportSkipped": "{{count}} skill(s) were skipped.",
     "githubImportCentralSuccess": "GitHub repo skills imported into Central",
-    "githubImportInstallImportedSkill": "Install to platforms"
+    "githubImportInstallImportedSkill": "Install to platforms",
+    "githubPatSettingsHint": "Open Settings and save a GitHub Personal Access Token to use authenticated direct GitHub requests for this import flow."
   }
 }

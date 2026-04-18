@@ -8,12 +8,20 @@ interface SettingsState {
   scanDirectories: ScanDirectory[];
   isLoadingScanDirs: boolean;
   error: string | null;
+  githubPat: string;
+  isLoadingGitHubPat: boolean;
+  isSavingGitHubPat: boolean;
 
   // Actions — scan directories
   loadScanDirectories: () => Promise<void>;
   addScanDirectory: (path: string, label?: string) => Promise<ScanDirectory>;
   removeScanDirectory: (path: string) => Promise<void>;
   toggleScanDirectory: (path: string, active: boolean) => Promise<void>;
+
+  // Actions — GitHub PAT
+  loadGitHubPat: () => Promise<void>;
+  saveGitHubPat: (value: string) => Promise<void>;
+  clearGitHubPat: () => Promise<void>;
 
   // Actions — custom agents
   addCustomAgent: (config: CustomAgentConfig) => Promise<AgentWithStatus>;
@@ -29,6 +37,9 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   scanDirectories: [],
   isLoadingScanDirs: false,
   error: null,
+  githubPat: "",
+  isLoadingGitHubPat: false,
+  isSavingGitHubPat: false,
 
   // ── Scan Directories ───────────────────────────────────────────────────────
 
@@ -82,6 +93,58 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         d.path === path ? { ...d, is_active: active } : d
       ),
     }));
+  },
+
+  // ── GitHub PAT ────────────────────────────────────────────────────────────
+
+  loadGitHubPat: async () => {
+    set({ isLoadingGitHubPat: true, error: null });
+    try {
+      const value = await invoke<string | null>("get_setting", { key: "github_pat" });
+      set({
+        githubPat: value ?? "",
+        isLoadingGitHubPat: false,
+      });
+    } catch (err) {
+      set({
+        error: String(err),
+        isLoadingGitHubPat: false,
+      });
+    }
+  },
+
+  saveGitHubPat: async (value: string) => {
+    set({ isSavingGitHubPat: true, error: null });
+    try {
+      await invoke("set_setting", { key: "github_pat", value });
+      set({
+        githubPat: value.trim(),
+        isSavingGitHubPat: false,
+      });
+    } catch (err) {
+      set({
+        error: String(err),
+        isSavingGitHubPat: false,
+      });
+      throw err;
+    }
+  },
+
+  clearGitHubPat: async () => {
+    set({ isSavingGitHubPat: true, error: null });
+    try {
+      await invoke("set_setting", { key: "github_pat", value: "" });
+      set({
+        githubPat: "",
+        isSavingGitHubPat: false,
+      });
+    } catch (err) {
+      set({
+        error: String(err),
+        isSavingGitHubPat: false,
+      });
+      throw err;
+    }
   },
 
   // ── Custom Agents ──────────────────────────────────────────────────────────

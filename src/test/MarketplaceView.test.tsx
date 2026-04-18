@@ -774,4 +774,23 @@ describe("MarketplaceView", () => {
 
     isTauriSpy.mockRestore();
   });
+
+  it("adds settings guidance when github preview fails with auth or rate-limit help", async () => {
+    storeState.githubImport = {
+      isPreviewLoading: false,
+      isImporting: false,
+      preview: null,
+      importResult: null,
+      previewedRepoUrl: "https://github.com/anthropics/skills",
+      error: "GitHub API rate limit exceeded. Save a Personal Access Token in Settings and retry.",
+    };
+
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: "Import GitHub repo" }));
+
+    expect(
+      await screen.findByText(/Open Settings and save a GitHub Personal Access Token/i)
+    ).toBeInTheDocument();
+  });
 });

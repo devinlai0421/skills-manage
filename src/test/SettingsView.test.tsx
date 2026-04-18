@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { SettingsView } from "../pages/SettingsView";
 import { ScanDirectory, AgentWithStatus } from "../types";
+import { invoke } from "@tauri-apps/api/core";
 
 // Mock stores
 vi.mock("../stores/settingsStore", () => ({
@@ -20,6 +21,10 @@ vi.mock("../stores/themeStore", () => ({
     "peach", "yellow", "green", "teal", "sky", "sapphire",
     "blue", "lavender",
   ],
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
 }));
 
 import { useSettingsStore } from "../stores/settingsStore";
@@ -79,6 +84,12 @@ function setupMocks({
   addCustomAgent = vi.fn(),
   updateCustomAgent = vi.fn(),
   removeCustomAgent = vi.fn(),
+  githubPat = "",
+  isLoadingGitHubPat = false,
+  isSavingGitHubPat = false,
+  loadGitHubPat = vi.fn(),
+  saveGitHubPat = vi.fn(),
+  clearGitHubPat = vi.fn(),
   rescan = vi.fn(),
   flavor = "mocha" as const,
   setFlavor = vi.fn(),
@@ -97,6 +108,12 @@ function setupMocks({
       addCustomAgent,
       updateCustomAgent,
       removeCustomAgent,
+      githubPat,
+      isLoadingGitHubPat,
+      isSavingGitHubPat,
+      loadGitHubPat,
+      saveGitHubPat,
+      clearGitHubPat,
       clearError: vi.fn(),
     })
   );
@@ -140,6 +157,7 @@ function renderSettingsView() {
 describe("SettingsView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(invoke).mockResolvedValue(null);
   });
 
   // ── Rendering ─────────────────────────────────────────────────────────────
@@ -150,7 +168,13 @@ describe("SettingsView", () => {
     expect(screen.getByRole("heading", { name: "设置" })).toBeTruthy();
   });
 
-  it("renders all three sections", () => {
+  it("renders the github token section", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByText("GitHub 导入访问令牌")).toBeTruthy();
+  });
+
+  it("renders the existing settings sections", () => {
     setupMocks();
     renderSettingsView();
     expect(screen.getByText("扫描目录")).toBeTruthy();
@@ -163,6 +187,51 @@ describe("SettingsView", () => {
     setupMocks({ loadScanDirectories });
     renderSettingsView();
     expect(loadScanDirectories).toHaveBeenCalled();
+  });
+
+  it("calls loadGitHubPat on mount", () => {
+    const loadGitHubPat = vi.fn();
+    setupMocks({ loadGitHubPat });
+    renderSettingsView();
+    expect(loadGitHubPat).toHaveBeenCalled();
+  });
+
+  it("renders the saved github pat value and explanation copy", () => {
+    setupMocks({ githubPat: "github_pat_saved" });
+    renderSettingsView();
+
+    expect(screen.getByLabelText("GitHub Personal Access Token")).toHaveValue("github_pat_saved");
+    expect(screen.getByText(/它绝不会被发送到公共镜像或代理回退链路/)).toBeTruthy();
+    expect(screen.getByText(/当 GitHub 预览\/导入遇到限流/)).toBeTruthy();
+  });
+
+  it("saves the github pat from settings", async () => {
+    const saveGitHubPat = vi.fn().mockResolvedValue(undefined);
+    setupMocks({ githubPat: "", saveGitHubPat });
+    renderSettingsView();
+
+    fireEvent.change(screen.getByLabelText("GitHub Personal Access Token"), {
+      target: { value: "  github_pat_new  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => {
+      expect(saveGitHubPat).toHaveBeenCalledWith("  github_pat_new  ");
+    });
+    expect(await screen.findByText("GitHub 令牌已保存")).toBeTruthy();
+  });
+
+  it("clears the github pat from settings", async () => {
+    const clearGitHubPat = vi.fn().mockResolvedValue(undefined);
+    setupMocks({ githubPat: "github_pat_saved", clearGitHubPat });
+    renderSettingsView();
+
+    fireEvent.click(screen.getByRole("button", { name: "清除令牌" }));
+
+    await waitFor(() => {
+      expect(clearGitHubPat).toHaveBeenCalled();
+    });
+    expect(await screen.findByText("GitHub 令牌已清除")).toBeTruthy();
   });
 
   // ── Scan Directories section ──────────────────────────────────────────────

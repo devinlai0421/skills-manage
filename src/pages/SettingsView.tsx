@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight, KeyRound } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -181,6 +181,12 @@ export function SettingsView() {
   const addCustomAgent = useSettingsStore((s) => s.addCustomAgent);
   const updateCustomAgent = useSettingsStore((s) => s.updateCustomAgent);
   const removeCustomAgent = useSettingsStore((s) => s.removeCustomAgent);
+  const githubPat = useSettingsStore((s) => s.githubPat);
+  const isLoadingGitHubPat = useSettingsStore((s) => s.isLoadingGitHubPat);
+  const isSavingGitHubPat = useSettingsStore((s) => s.isSavingGitHubPat);
+  const loadGitHubPat = useSettingsStore((s) => s.loadGitHubPat);
+  const saveGitHubPat = useSettingsStore((s) => s.saveGitHubPat);
+  const clearGitHubPat = useSettingsStore((s) => s.clearGitHubPat);
 
   const agents = usePlatformStore((s) => s.agents);
 
@@ -271,12 +277,21 @@ export function SettingsView() {
   const [removingAgent, setRemovingAgent] = useState<string | null>(null);
   const [scanDirError, setScanDirError] = useState<string | null>(null);
   const [platformError, setPlatformError] = useState<string | null>(null);
+  const [githubPatInput, setGitHubPatInput] = useState("");
+  const [githubPatMessage, setGitHubPatMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // ── Load on mount ──────────────────────────────────────────────────────────
 
   useEffect(() => {
     loadScanDirectories();
-  }, [loadScanDirectories]);
+    loadGitHubPat();
+  }, [loadScanDirectories, loadGitHubPat]);
+
+  useEffect(() => {
+    setGitHubPatInput(githubPat);
+  }, [githubPat]);
+
+  const isGitHubPatDirty = useMemo(() => githubPatInput.trim() !== githubPat, [githubPatInput, githubPat]);
 
   // ── Scan Directories Handlers ──────────────────────────────────────────────
 
@@ -391,6 +406,39 @@ export function SettingsView() {
     }
   }
 
+  async function handleSaveGitHubPat() {
+    setGitHubPatMessage(null);
+    try {
+      await saveGitHubPat(githubPatInput);
+      setGitHubPatMessage({
+        type: "success",
+        text: t("settings.githubPatSaved"),
+      });
+      toast.success(t("settings.githubPatSaved"));
+    } catch (err) {
+      const text = String(err);
+      setGitHubPatMessage({ type: "error", text });
+      toast.error(text);
+    }
+  }
+
+  async function handleClearGitHubPat() {
+    setGitHubPatMessage(null);
+    try {
+      await clearGitHubPat();
+      setGitHubPatInput("");
+      setGitHubPatMessage({
+        type: "success",
+        text: t("settings.githubPatCleared"),
+      });
+      toast.success(t("settings.githubPatCleared"));
+    } catch (err) {
+      const text = String(err);
+      setGitHubPatMessage({ type: "error", text });
+      toast.error(text);
+    }
+  }
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -452,7 +500,73 @@ export function SettingsView() {
           </CardContent>
         </Card>
 
-        {/* ── Section 2: AI Provider ─────────────────────────────────────── */}
+        {/* ── Section 2: GitHub Import Auth ─────────────────────────────── */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <KeyRound className="size-5 text-muted-foreground" />
+              <div>
+                <CardTitle>{t("settings.githubPatTitle")}</CardTitle>
+                <CardDescription className="mt-1">
+                  {t("settings.githubPatDesc")}
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="github-pat" className="mb-1 block text-xs text-muted-foreground">
+                  {t("settings.githubPatLabel")}
+                </label>
+                <Input
+                  id="github-pat"
+                  type="password"
+                  placeholder="github_pat_..."
+                  value={githubPatInput}
+                  onChange={(event) => setGitHubPatInput(event.target.value)}
+                  disabled={isLoadingGitHubPat || isSavingGitHubPat}
+                />
+              </div>
+
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-3 text-sm text-muted-foreground">
+                <p>{t("settings.githubPatDirectOnly")}</p>
+                <p className="mt-2">{t("settings.githubPatRateLimitHint")}</p>
+              </div>
+
+              {githubPatMessage ? (
+                <p
+                  className={githubPatMessage.type === "error" ? "text-sm text-destructive" : "text-sm text-emerald-600 dark:text-emerald-400"}
+                  role="status"
+                >
+                  {githubPatMessage.text}
+                </p>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  onClick={handleSaveGitHubPat}
+                  disabled={isLoadingGitHubPat || isSavingGitHubPat || !isGitHubPatDirty}
+                >
+                  {isSavingGitHubPat ? <Loader2 className="size-4 animate-spin" /> : null}
+                  <span>{t("common.save")}</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleClearGitHubPat}
+                  disabled={isLoadingGitHubPat || isSavingGitHubPat || !githubPat}
+                >
+                  <span>{t("settings.githubPatClear")}</span>
+                </Button>
+                {isLoadingGitHubPat ? (
+                  <span className="text-xs text-muted-foreground">{t("settings.loading")}</span>
+                ) : null}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* ── Section 3: AI Provider ─────────────────────────────────────── */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
@@ -568,7 +682,7 @@ export function SettingsView() {
           </CardContent>
         </Card>
 
-        {/* ── Section 3: Scan Directories (compact) ─────────────────────── */}
+        {/* ── Section 4: Scan Directories (compact) ─────────────────────── */}
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -634,7 +748,7 @@ export function SettingsView() {
           </CardContent>
         </Card>
 
-        {/* ── Section 4: About ────────────────────────────────────────────── */}
+        {/* ── Section 5: About ────────────────────────────────────────────── */}
         <Card>
           <CardHeader>
             <CardTitle>{t("settings.about")}</CardTitle>

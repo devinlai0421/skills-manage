@@ -222,6 +222,14 @@
     "noPlatforms": "暂无自定义平台。点击「添加平台」注册新平台。",
     "editPlatformLabel": "编辑平台 {{name}}",
     "removePlatformLabel": "删除平台 {{name}}",
+    "githubPatTitle": "GitHub 导入访问令牌",
+    "githubPatDesc": "为仓库导入流程保存 GitHub Personal Access Token，这样下次无需在每次导入时重新输入。",
+    "githubPatLabel": "GitHub Personal Access Token",
+    "githubPatDirectOnly": "该令牌只会用于直连 GitHub 的请求：github.com、api.github.com 和 raw.githubusercontent.com。它绝不会被发送到公共镜像或代理回退链路。",
+    "githubPatRateLimitHint": "当 GitHub 预览/导入遇到限流，或需要已认证访问时，请配置这个令牌。",
+    "githubPatSaved": "GitHub 令牌已保存",
+    "githubPatCleared": "GitHub 令牌已清除",
+    "githubPatClear": "清除令牌",
     "about": "关于",
     "appVersion": "应用版本",
     "dbPath": "数据库路径",
@@ -420,6 +428,7 @@
     "githubImportSuccessDesc": "已将 {{count}} 个技能导入中央技能库。现在你可以把任意已导入技能安装到指定平台。",
     "githubImportSkipped": "已跳过 {{count}} 个技能。",
     "githubImportCentralSuccess": "GitHub 仓库技能已导入中央技能库",
-    "githubImportInstallImportedSkill": "安装到平台"
+    "githubImportInstallImportedSkill": "安装到平台",
+    "githubPatSettingsHint": "请前往设置并保存 GitHub Personal Access Token，让该导入流程改用经过认证的直连 GitHub 请求。"
   }
 }
