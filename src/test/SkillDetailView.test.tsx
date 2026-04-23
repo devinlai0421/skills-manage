@@ -125,16 +125,16 @@ const mockDetail: SkillDetailType = {
   ],
 };
 
-const mockMarketplaceDetail: SkillDetailType = {
+const mockPluginDetail: SkillDetailType = {
   ...mockDetail,
-  row_id: "claude-code::marketplace::frontend-design",
-  file_path: "~/.claude/plugins/marketplaces/publisher/frontend-design/SKILL.md",
-  dir_path: "~/.claude/plugins/marketplaces/publisher/frontend-design",
+  row_id: "claude-code::plugin::frontend-design",
+  file_path: "~/.claude/plugins/cache/publisher/frontend-design/unknown/skills/frontend-design/SKILL.md",
+  dir_path: "~/.claude/plugins/cache/publisher/frontend-design/unknown/skills/frontend-design",
   canonical_path: undefined,
   is_central: false,
-  source: "marketplace",
-  source_kind: "marketplace",
-  source_root: "~/.claude/plugins/marketplaces/publisher",
+  source: "plugin",
+  source_kind: "plugin",
+  source_root: "~/.claude/plugins/cache/publisher/frontend-design/unknown",
   is_read_only: true,
   installations: [],
   collections: [],
@@ -164,8 +164,8 @@ const mockClaudeUserDetail: SkillDetailType = {
 const mockContent =
   "---\nname: frontend-design\ndescription: Build distinctive, production-grade frontend interfaces\nmetadata:\n  openclaw:\n    requires:\n      anyBins:\n        - bun\n        - npx\n---\n\n# Frontend Design\n\nContent here.";
 
-const mockMarketplaceContent =
-  "---\nname: frontend-design\ndescription: Marketplace copy\n---\n\n# Marketplace Frontend Design\n\nMarketplace content.";
+const mockPluginContent =
+  "---\nname: frontend-design\ndescription: Plugin copy\n---\n\n# Plugin Frontend Design\n\nPlugin content.";
 
 const mockUserContent =
   "---\nname: frontend-design\ndescription: User copy\n---\n\n# User Frontend Design\n\nUser content.";
@@ -314,10 +314,10 @@ describe("SkillDetailView", () => {
     expect(screen.getByText("native")).toBeInTheDocument();
   });
 
-  it("shows a read-only marketplace source state and blocks management actions", () => {
+  it("shows a read-only plugin source state and blocks management actions", () => {
     applyStoreMocks({
-      detail: mockMarketplaceDetail,
-      content: mockMarketplaceContent,
+      detail: mockPluginDetail,
+      content: mockPluginContent,
     });
 
     render(
@@ -325,7 +325,7 @@ describe("SkillDetailView", () => {
         <SkillDetailView
           skillId="frontend-design"
           agentId="claude-code"
-          rowId="claude-code::marketplace::frontend-design"
+          rowId="claude-code::plugin::frontend-design"
           variant="drawer"
         />
       </MemoryRouter>
@@ -333,17 +333,17 @@ describe("SkillDetailView", () => {
 
     const sourceStatusRegion = screen.getByRole("region", { name: /来源状态|Source status/i });
     expect(
-      within(sourceStatusRegion).getByText(/市场来源|Marketplace source/i)
+      within(sourceStatusRegion).getByText(/插件来源|Plugin source/i)
     ).toBeInTheDocument();
     expect(
       within(sourceStatusRegion).getByText(/只读来源|Read-only source/i)
     ).toBeInTheDocument();
     expect(
-      screen.getByText("~/.claude/plugins/marketplaces/publisher/frontend-design/SKILL.md")
+      screen.getByText("~/.claude/plugins/cache/publisher/frontend-design/unknown/skills/frontend-design/SKILL.md")
     ).toBeInTheDocument();
-    expect(screen.getByText("~/.claude/plugins/marketplaces/publisher")).toBeInTheDocument();
+    expect(screen.getByText("~/.claude/plugins/cache/publisher/frontend-design/unknown")).toBeInTheDocument();
     expect(
-      screen.getByText(/市场托管副本仅供查看|display-only/i)
+      screen.getByText(/插件安装的副本仅供查看|display-only/i)
     ).toBeInTheDocument();
     expect(
       screen.getByText(/不可安装或卸载|Install and uninstall are unavailable/i)
@@ -590,8 +590,8 @@ describe("SkillDetailView", () => {
 
   it("loads cached explanation with the selected Claude row id", async () => {
     applyStoreMocks({
-      detail: mockMarketplaceDetail,
-      content: mockMarketplaceContent,
+      detail: mockPluginDetail,
+      content: mockPluginContent,
     });
 
     render(
@@ -599,7 +599,7 @@ describe("SkillDetailView", () => {
         <SkillDetailView
           skillId="frontend-design"
           agentId="claude-code"
-          rowId="claude-code::marketplace::frontend-design"
+          rowId="claude-code::plugin::frontend-design"
           variant="page"
         />
       </MemoryRouter>
@@ -607,7 +607,7 @@ describe("SkillDetailView", () => {
 
     await waitFor(() => {
       expect(mockLoadCachedExplanation).toHaveBeenCalledWith(
-        "claude-code::marketplace::frontend-design",
+        "claude-code::plugin::frontend-design",
         "zh"
       );
     });
@@ -666,8 +666,8 @@ describe("SkillDetailView", () => {
 
   it("calls generateExplanation with the selected Claude row id", async () => {
     applyStoreMocks({
-      detail: mockMarketplaceDetail,
-      content: mockMarketplaceContent,
+      detail: mockPluginDetail,
+      content: mockPluginContent,
     });
 
     render(
@@ -675,7 +675,7 @@ describe("SkillDetailView", () => {
         <SkillDetailView
           skillId="frontend-design"
           agentId="claude-code"
-          rowId="claude-code::marketplace::frontend-design"
+          rowId="claude-code::plugin::frontend-design"
           variant="page"
         />
       </MemoryRouter>
@@ -686,8 +686,8 @@ describe("SkillDetailView", () => {
 
     await waitFor(() => {
       expect(mockGenerateExplanation).toHaveBeenCalledWith(
-        "claude-code::marketplace::frontend-design",
-        mockMarketplaceContent,
+        "claude-code::plugin::frontend-design",
+        mockPluginContent,
         "zh"
       );
     });
@@ -937,7 +937,7 @@ describe("SkillDetailView", () => {
         <SkillDetailView
           skillId="frontend-design"
           agentId="claude-code"
-          rowId="claude-code::marketplace::frontend-design"
+          rowId="claude-code::plugin::frontend-design"
           variant="drawer"
         />
       </MemoryRouter>
@@ -946,14 +946,14 @@ describe("SkillDetailView", () => {
     expect(mockLoadDetail).toHaveBeenCalledWith({
       skillId: "frontend-design",
       agentId: "claude-code",
-      rowId: "claude-code::marketplace::frontend-design",
+      rowId: "claude-code::plugin::frontend-design",
     });
   });
 
   it("switching duplicate Claude rows updates path, content, and management affordances", async () => {
     applyStoreMocks({
-      detail: mockMarketplaceDetail,
-      content: mockMarketplaceContent,
+      detail: mockPluginDetail,
+      content: mockPluginContent,
     });
 
     const { rerender } = render(
@@ -961,14 +961,14 @@ describe("SkillDetailView", () => {
         <SkillDetailView
           skillId="frontend-design"
           agentId="claude-code"
-          rowId="claude-code::marketplace::frontend-design"
+          rowId="claude-code::plugin::frontend-design"
           variant="drawer"
         />
       </MemoryRouter>
     );
 
-    expect(screen.getByText("~/.claude/plugins/marketplaces/publisher/frontend-design/SKILL.md")).toBeInTheDocument();
-    expect(screen.getByTestId("react-markdown")).toHaveTextContent("# Marketplace Frontend Design");
+    expect(screen.getByText("~/.claude/plugins/cache/publisher/frontend-design/unknown/skills/frontend-design/SKILL.md")).toBeInTheDocument();
+    expect(screen.getByTestId("react-markdown")).toHaveTextContent("# Plugin Frontend Design");
     expect(screen.queryByRole("button", { name: /加入技能集/i })).toBeNull();
 
     mockLoadDetail.mockClear();

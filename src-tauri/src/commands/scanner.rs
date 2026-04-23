@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tauri::State;
 
 use crate::db::{self, AgentSkillObservation, DbPool, Skill, SkillInstallation};
@@ -46,26 +46,51 @@ pub struct ScanResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClaudeSourceKind {
     User,
-    Marketplace,
+    Plugin,
 }
 
 impl ClaudeSourceKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::User => "user",
-            Self::Marketplace => "marketplace",
+            Self::Plugin => "plugin",
         }
     }
 
     fn is_read_only(self) -> bool {
-        matches!(self, Self::Marketplace)
+        matches!(self, Self::Plugin)
     }
 }
 
 #[derive(Debug, Clone)]
 struct AgentScanRoot {
     path: PathBuf,
+    source_root: Option<PathBuf>,
     claude_source: Option<ClaudeSourceKind>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ClaudeSettingsFile {
+    #[serde(default, rename = "enabledPlugins")]
+    enabled_plugins: HashMap<String, bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ClaudeInstalledPluginsFile {
+    #[serde(default)]
+    plugins: HashMap<String, Vec<ClaudeInstalledPluginInstall>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ClaudeInstalledPluginInstall {
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(rename = "installPath")]
+    install_path: String,
+    #[serde(default, rename = "installedAt")]
+    installed_at: Option<String>,
+    #[serde(default, rename = "lastUpdated")]
+    last_updated: Option<String>,
 }
 
 // ─── Core Functions ───────────────────────────────────────────────────────────
@@ -187,22 +212,102 @@ pub fn scan_directory(dir: &Path, is_central: bool) -> Vec<ScannedSkill> {
     skills
 }
 
-fn claude_marketplace_roots(global_skills_dir: &Path) -> Vec<PathBuf> {
-    let Some(claude_root) = global_skills_dir.parent() else {
+fn read_json_file<T: DeserializeOwned>(path: &Path) -> Option<T> {
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn claude_runtime_root(global_skills_dir: &Path) -> Option<PathBuf> {
+    global_skills_dir.parent().map(Path::to_path_buf)
+}
+
+fn claude_enabled_plugin_ids(claude_root: &Path) -> Vec<String> {
+    let settings_path = claude_root.join("settings.json");
+    let Some(settings) = read_json_file::<ClaudeSettingsFile>(&settings_path) else {
         return Vec::new();
     };
 
-    let marketplaces_dir = claude_root.join("plugins/marketplaces");
-    let Ok(entries) = std::fs::read_dir(&marketplaces_dir) else {
-        return Vec::new();
-    };
-
-    let mut roots: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
+    let mut enabled: Vec<String> = settings
+        .enabled_plugins
+        .into_iter()
+        .filter_map(|(plugin_id, is_enabled)| is_enabled.then_some(plugin_id))
         .collect();
-    roots.sort();
+    enabled.sort();
+    enabled
+}
+
+fn claude_select_effective_plugin_installs(
+    installs: &[ClaudeInstalledPluginInstall],
+) -> Vec<ClaudeInstalledPluginInstall> {
+    let preferred_scope = installs
+        .iter()
+        .any(|install| install.scope.as_deref() == Some("user"));
+
+    installs
+        .iter()
+        .filter(|install| !preferred_scope || install.scope.as_deref() == Some("user"))
+        .max_by(|a, b| {
+            let a_key = a
+                .last_updated
+                .as_deref()
+                .or(a.installed_at.as_deref())
+                .unwrap_or("");
+            let b_key = b
+                .last_updated
+                .as_deref()
+                .or(b.installed_at.as_deref())
+                .unwrap_or("");
+            a_key
+                .cmp(b_key)
+                .then_with(|| a.install_path.cmp(&b.install_path))
+        })
+        .cloned()
+        .into_iter()
+        .collect()
+}
+
+fn claude_plugin_roots(global_skills_dir: &Path) -> Vec<AgentScanRoot> {
+    let Some(claude_root) = claude_runtime_root(global_skills_dir) else {
+        return Vec::new();
+    };
+
+    let installed_path = claude_root.join("plugins/installed_plugins.json");
+    let installed =
+        read_json_file::<ClaudeInstalledPluginsFile>(&installed_path).unwrap_or_default();
+    let mut seen_scan_paths = HashSet::new();
+    let mut roots = Vec::new();
+
+    for plugin_id in claude_enabled_plugin_ids(&claude_root) {
+        let Some(installs) = installed.plugins.get(&plugin_id) else {
+            continue;
+        };
+
+        for install in claude_select_effective_plugin_installs(installs) {
+            let install_root = PathBuf::from(&install.install_path);
+            let candidate_paths = [
+                install_root.join("skills"),
+                install_root.join(".claude").join("skills"),
+            ];
+
+            for scan_path in candidate_paths {
+                if !scan_path.exists() {
+                    continue;
+                }
+
+                let scan_path_key = scan_path.to_string_lossy().into_owned();
+                if !seen_scan_paths.insert(scan_path_key) {
+                    continue;
+                }
+
+                roots.push(AgentScanRoot {
+                    path: scan_path,
+                    source_root: Some(install_root.clone()),
+                    claude_source: Some(ClaudeSourceKind::Plugin),
+                });
+            }
+        }
+    }
+
     roots
 }
 
@@ -211,22 +316,17 @@ fn scan_roots_for_agent(agent: &crate::db::Agent) -> Vec<AgentScanRoot> {
     if agent.id != "claude-code" {
         return vec![AgentScanRoot {
             path: primary_root,
+            source_root: None,
             claude_source: None,
         }];
     }
 
     let mut roots = vec![AgentScanRoot {
         path: primary_root.clone(),
+        source_root: Some(primary_root.clone()),
         claude_source: Some(ClaudeSourceKind::User),
     }];
-    roots.extend(
-        claude_marketplace_roots(&primary_root)
-            .into_iter()
-            .map(|path| AgentScanRoot {
-                path,
-                claude_source: Some(ClaudeSourceKind::Marketplace),
-            }),
-    );
+    roots.extend(claude_plugin_roots(&primary_root));
     roots
 }
 
@@ -276,7 +376,12 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         let mut found_observation_row_ids = Vec::new();
 
         for root in &existing_roots {
-            let root_path = root.path.to_string_lossy().into_owned();
+            let root_path = root
+                .source_root
+                .as_ref()
+                .unwrap_or(&root.path)
+                .to_string_lossy()
+                .into_owned();
             let root_scanned = scan_directory(&root.path, is_central);
 
             for skill in &root_scanned {
@@ -303,7 +408,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                 }
 
                 let should_persist_manageable_state =
-                    root.claude_source != Some(ClaudeSourceKind::Marketplace);
+                    root.claude_source != Some(ClaudeSourceKind::Plugin);
                 if should_persist_manageable_state {
                     all_found_skill_ids.insert(skill.id.clone());
                     found_install_ids.push(skill.id.clone());
@@ -432,6 +537,48 @@ mod tests {
 
     fn skill_md_no_description(name: &str) -> String {
         format!("---\nname: {}\n---\n\n# {}\n", name, name)
+    }
+
+    fn write_claude_plugin_runtime(claude_root: &Path, enabled_plugins: &[(&str, &Path)]) {
+        fs::create_dir_all(claude_root.join("plugins")).unwrap();
+
+        let enabled_json = enabled_plugins
+            .iter()
+            .map(|(plugin_id, _)| (plugin_id.to_string(), serde_json::Value::Bool(true)))
+            .collect::<serde_json::Map<_, _>>();
+        fs::write(
+            claude_root.join("settings.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "enabledPlugins": enabled_json,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let installed_json = enabled_plugins
+            .iter()
+            .map(|(plugin_id, install_path)| {
+                (
+                    plugin_id.to_string(),
+                    serde_json::json!([{
+                        "scope": "user",
+                        "installPath": install_path.to_string_lossy().to_string(),
+                        "version": "test-version",
+                        "installedAt": "2026-04-23T00:00:00Z",
+                        "lastUpdated": "2026-04-23T00:00:00Z"
+                    }]),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        fs::write(
+            claude_root.join("plugins/installed_plugins.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "version": 2,
+                "plugins": installed_json,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     }
 
     // ── parse_skill_md ────────────────────────────────────────────────────────
@@ -938,7 +1085,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_scan_all_skills_impl_claude_scans_user_and_multiple_marketplace_roots() {
+    async fn test_scan_all_skills_impl_claude_scans_user_and_multiple_plugin_roots() {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
@@ -953,13 +1100,14 @@ mod tests {
 
         let claude_root = tmp.path().join(".claude");
         let user_root = claude_root.join("skills");
-        let marketplace_root = claude_root.join("plugins/marketplaces");
-        let market_a_root = marketplace_root.join("market-a");
-        let market_b_root = marketplace_root.join("market-b");
+        let plugin_a_root = claude_root.join("plugins/cache/publisher-a/plugin-a/1.0.0");
+        let plugin_b_root = claude_root.join("plugins/cache/publisher-b/plugin-b/2.0.0");
+        let plugin_a_skill_root = plugin_a_root.join("skills");
+        let plugin_b_skill_root = plugin_b_root.join(".claude/skills");
 
         fs::create_dir_all(&user_root).unwrap();
-        fs::create_dir_all(&market_a_root).unwrap();
-        fs::create_dir_all(&market_b_root).unwrap();
+        fs::create_dir_all(&plugin_a_skill_root).unwrap();
+        fs::create_dir_all(&plugin_b_skill_root).unwrap();
 
         create_skill_dir(
             &user_root,
@@ -967,14 +1115,21 @@ mod tests {
             &valid_skill_md("User Skill", "From ~/.claude/skills"),
         );
         create_skill_dir(
-            &market_a_root,
-            "market-a-skill",
-            &valid_skill_md("Market A Skill", "From marketplace A"),
+            &plugin_a_skill_root,
+            "plugin-a-skill",
+            &valid_skill_md("plugin-a:skill", "From plugin A"),
         );
         create_skill_dir(
-            &market_b_root,
-            "market-b-skill",
-            &valid_skill_md("Market B Skill", "From marketplace B"),
+            &plugin_b_skill_root,
+            "plugin-b-skill",
+            &valid_skill_md("plugin-b:skill", "From plugin B"),
+        );
+        write_claude_plugin_runtime(
+            &claude_root,
+            &[
+                ("plugin-a@publisher-a", &plugin_a_root),
+                ("plugin-b@publisher-b", &plugin_b_root),
+            ],
         );
 
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
@@ -990,41 +1145,49 @@ mod tests {
         let mut skills = db::get_skills_by_agent(&pool, "claude-code").await.unwrap();
         skills.sort_by(|a, b| a.id.cmp(&b.id));
         let ids: Vec<&str> = skills.iter().map(|skill| skill.id.as_str()).collect();
-        assert_eq!(ids, vec!["market-a-skill", "market-b-skill", "user-skill"]);
+        assert_eq!(ids, vec!["plugin-a-skill", "plugin-b-skill", "user-skill"]);
 
         let observations = db::get_agent_skill_observations(&pool, "claude-code")
             .await
             .unwrap();
         assert_eq!(observations.len(), 3);
 
-        let market_a_rows: Vec<_> = observations
+        let plugin_a_rows: Vec<_> = observations
             .iter()
-            .filter(|row| row.skill_id == "market-a-skill")
+            .filter(|row| row.skill_id == "plugin-a-skill")
             .collect();
-        assert_eq!(market_a_rows.len(), 1);
-        assert_eq!(market_a_rows[0].source_kind, "marketplace");
+        assert_eq!(plugin_a_rows.len(), 1);
+        assert_eq!(plugin_a_rows[0].source_kind, "plugin");
         assert_eq!(
-            market_a_rows[0].dir_path,
-            market_a_root.join("market-a-skill").to_string_lossy()
+            plugin_a_rows[0].dir_path,
+            plugin_a_skill_root.join("plugin-a-skill").to_string_lossy()
+        );
+        assert_eq!(
+            plugin_a_rows[0].source_root,
+            plugin_a_root.to_string_lossy()
         );
 
-        let market_b_rows: Vec<_> = observations
+        let plugin_b_rows: Vec<_> = observations
             .iter()
-            .filter(|row| row.skill_id == "market-b-skill")
+            .filter(|row| row.skill_id == "plugin-b-skill")
             .collect();
-        assert_eq!(market_b_rows.len(), 1);
-        assert_eq!(market_b_rows[0].source_kind, "marketplace");
+        assert_eq!(plugin_b_rows.len(), 1);
+        assert_eq!(plugin_b_rows[0].source_kind, "plugin");
         assert_eq!(
-            market_b_rows[0].dir_path,
-            market_b_root.join("market-b-skill").to_string_lossy()
+            plugin_b_rows[0].dir_path,
+            plugin_b_skill_root.join("plugin-b-skill").to_string_lossy()
+        );
+        assert_eq!(
+            plugin_b_rows[0].source_root,
+            plugin_b_root.to_string_lossy()
         );
 
-        let market_a_installations = db::get_skill_installations(&pool, "market-a-skill")
+        let plugin_a_installations = db::get_skill_installations(&pool, "plugin-a-skill")
             .await
             .unwrap();
         assert!(
-            market_a_installations.is_empty(),
-            "marketplace rows should not create install-state records"
+            plugin_a_installations.is_empty(),
+            "plugin rows should not create install-state records"
         );
     }
 
@@ -1045,9 +1208,10 @@ mod tests {
 
         let claude_root = tmp.path().join(".claude");
         let user_root = claude_root.join("skills");
-        let marketplace_root = claude_root.join("plugins/marketplaces/market-a");
+        let plugin_root = claude_root.join("plugins/cache/publisher/shared-plugin/1.0.0");
+        let plugin_skill_root = plugin_root.join("skills");
         fs::create_dir_all(&user_root).unwrap();
-        fs::create_dir_all(&marketplace_root).unwrap();
+        fs::create_dir_all(&plugin_skill_root).unwrap();
 
         create_skill_dir(
             &user_root,
@@ -1055,10 +1219,11 @@ mod tests {
             &valid_skill_md("Shared Skill", "User copy"),
         );
         create_skill_dir(
-            &marketplace_root,
+            &plugin_skill_root,
             "shared-skill",
-            &valid_skill_md("Shared Skill", "Marketplace copy"),
+            &valid_skill_md("shared-plugin:shared-skill", "Plugin copy"),
         );
+        write_claude_plugin_runtime(&claude_root, &[("shared-plugin@publisher", &plugin_root)]);
 
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
             .bind(user_root.to_string_lossy().to_string())
@@ -1078,7 +1243,7 @@ mod tests {
         assert_eq!(
             shared_rows.len(),
             2,
-            "user and marketplace copies should remain distinct observation rows"
+            "user and plugin copies should remain distinct observation rows"
         );
         assert_ne!(shared_rows[0].row_id, shared_rows[1].row_id);
 
@@ -1106,7 +1271,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_scan_all_skills_impl_claude_scans_marketplaces_even_without_user_root() {
+    async fn test_scan_all_skills_impl_claude_scans_plugins_even_without_user_root() {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
@@ -1121,22 +1286,30 @@ mod tests {
 
         let claude_root = tmp.path().join(".claude");
         let user_root = claude_root.join("skills");
-        let marketplace_root = claude_root.join("plugins/marketplaces");
-        let market_a_root = marketplace_root.join("market-a");
-        let market_b_root = marketplace_root.join("market-b");
+        let plugin_a_root = claude_root.join("plugins/cache/publisher-a/plugin-a/1.0.0");
+        let plugin_b_root = claude_root.join("plugins/cache/publisher-b/plugin-b/2.0.0");
+        let plugin_a_skill_root = plugin_a_root.join("skills");
+        let plugin_b_skill_root = plugin_b_root.join(".claude/skills");
 
-        fs::create_dir_all(&market_a_root).unwrap();
-        fs::create_dir_all(&market_b_root).unwrap();
+        fs::create_dir_all(&plugin_a_skill_root).unwrap();
+        fs::create_dir_all(&plugin_b_skill_root).unwrap();
 
         create_skill_dir(
-            &market_a_root,
-            "market-a-skill",
-            &valid_skill_md("Market A Skill", "From marketplace A"),
+            &plugin_a_skill_root,
+            "plugin-a-skill",
+            &valid_skill_md("plugin-a:skill", "From plugin A"),
         );
         create_skill_dir(
-            &market_b_root,
-            "market-b-skill",
-            &valid_skill_md("Market B Skill", "From marketplace B"),
+            &plugin_b_skill_root,
+            "plugin-b-skill",
+            &valid_skill_md("plugin-b:skill", "From plugin B"),
+        );
+        write_claude_plugin_runtime(
+            &claude_root,
+            &[
+                ("plugin-a@publisher-a", &plugin_a_root),
+                ("plugin-b@publisher-b", &plugin_b_root),
+            ],
         );
 
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
@@ -1154,12 +1327,12 @@ mod tests {
             .unwrap();
         assert!(
             detected.is_detected,
-            "claude-code should remain detected when only marketplace roots exist"
+            "claude-code should remain detected when only plugin roots exist"
         );
     }
 
     #[tokio::test]
-    async fn test_scan_all_skills_impl_non_claude_agents_ignore_claude_marketplaces() {
+    async fn test_scan_all_skills_impl_non_claude_agents_ignore_claude_plugins() {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
@@ -1174,13 +1347,14 @@ mod tests {
 
         let claude_like_root = tmp.path().join(".claude");
         let user_root = claude_like_root.join("skills");
-        let marketplace_root = claude_like_root.join("plugins/marketplaces");
-        let market_a_root = marketplace_root.join("market-a");
-        let market_b_root = marketplace_root.join("market-b");
+        let plugin_a_root = claude_like_root.join("plugins/cache/publisher-a/plugin-a/1.0.0");
+        let plugin_b_root = claude_like_root.join("plugins/cache/publisher-b/plugin-b/2.0.0");
+        let plugin_a_skill_root = plugin_a_root.join("skills");
+        let plugin_b_skill_root = plugin_b_root.join(".claude/skills");
 
         fs::create_dir_all(&user_root).unwrap();
-        fs::create_dir_all(&market_a_root).unwrap();
-        fs::create_dir_all(&market_b_root).unwrap();
+        fs::create_dir_all(&plugin_a_skill_root).unwrap();
+        fs::create_dir_all(&plugin_b_skill_root).unwrap();
 
         create_skill_dir(
             &user_root,
@@ -1188,14 +1362,21 @@ mod tests {
             &valid_skill_md("User Skill", "From primary root"),
         );
         create_skill_dir(
-            &market_a_root,
-            "market-a-skill",
-            &valid_skill_md("Market A Skill", "From marketplace A"),
+            &plugin_a_skill_root,
+            "plugin-a-skill",
+            &valid_skill_md("plugin-a:skill", "From plugin A"),
         );
         create_skill_dir(
-            &market_b_root,
-            "market-b-skill",
-            &valid_skill_md("Market B Skill", "From marketplace B"),
+            &plugin_b_skill_root,
+            "plugin-b-skill",
+            &valid_skill_md("plugin-b:skill", "From plugin B"),
+        );
+        write_claude_plugin_runtime(
+            &claude_like_root,
+            &[
+                ("plugin-a@publisher-a", &plugin_a_root),
+                ("plugin-b@publisher-b", &plugin_b_root),
+            ],
         );
 
         let agent = db::Agent {
@@ -1241,12 +1422,14 @@ mod tests {
             .unwrap();
 
         let user_root = fixture_home.join(".claude/skills");
-        let market_a_root = fixture_home.join(".claude/plugins/marketplaces/market-a");
-        let market_b_root = fixture_home.join(".claude/plugins/marketplaces/market-b");
+        let plugin_a_root = fixture_home.join(".claude/plugins/cache/publisher-a/plugin-a/1.0.0");
+        let plugin_b_root = fixture_home.join(".claude/plugins/cache/publisher-b/plugin-b/2.0.0");
+        let plugin_a_skill_root = plugin_a_root.join("skills");
+        let plugin_b_skill_root = plugin_b_root.join(".claude/skills");
 
         fs::create_dir_all(&user_root).unwrap();
-        fs::create_dir_all(&market_a_root).unwrap();
-        fs::create_dir_all(&market_b_root).unwrap();
+        fs::create_dir_all(&plugin_a_skill_root).unwrap();
+        fs::create_dir_all(&plugin_b_skill_root).unwrap();
 
         create_skill_dir(
             &user_root,
@@ -1254,14 +1437,21 @@ mod tests {
             &valid_skill_md("Fixture User Skill", "From fixture user root"),
         );
         create_skill_dir(
-            &market_a_root,
-            "fixture-market-a-skill",
-            &valid_skill_md("Fixture Market A Skill", "From fixture marketplace A"),
+            &plugin_a_skill_root,
+            "fixture-plugin-a-skill",
+            &valid_skill_md("plugin-a:fixture", "From fixture plugin A"),
         );
         create_skill_dir(
-            &market_b_root,
-            "fixture-market-b-skill",
-            &valid_skill_md("Fixture Market B Skill", "From fixture marketplace B"),
+            &plugin_b_skill_root,
+            "fixture-plugin-b-skill",
+            &valid_skill_md("plugin-b:fixture", "From fixture plugin B"),
+        );
+        write_claude_plugin_runtime(
+            &fixture_home.join(".claude"),
+            &[
+                ("plugin-a@publisher-a", &plugin_a_root),
+                ("plugin-b@publisher-b", &plugin_b_root),
+            ],
         );
 
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
@@ -1275,7 +1465,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_scan_all_skills_impl_claude_rescan_drops_stale_marketplace_duplicate_only() {
+    async fn test_scan_all_skills_impl_claude_rescan_drops_stale_plugin_duplicate_only() {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
@@ -1290,20 +1480,22 @@ mod tests {
 
         let claude_root = tmp.path().join(".claude");
         let user_root = claude_root.join("skills");
-        let marketplace_root = claude_root.join("plugins/marketplaces/market-a");
+        let plugin_root = claude_root.join("plugins/cache/publisher/shared-plugin/1.0.0");
+        let plugin_skill_root = plugin_root.join("skills");
         fs::create_dir_all(&user_root).unwrap();
-        fs::create_dir_all(&marketplace_root).unwrap();
+        fs::create_dir_all(&plugin_skill_root).unwrap();
 
-        let marketplace_skill_dir = create_skill_dir(
-            &marketplace_root,
+        let plugin_skill_dir = create_skill_dir(
+            &plugin_skill_root,
             "shared-skill",
-            &valid_skill_md("Shared Skill", "Marketplace copy"),
+            &valid_skill_md("shared-plugin:shared-skill", "Plugin copy"),
         );
         create_skill_dir(
             &user_root,
             "shared-skill",
             &valid_skill_md("Shared Skill", "User copy"),
         );
+        write_claude_plugin_runtime(&claude_root, &[("shared-plugin@publisher", &plugin_root)]);
 
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
             .bind(user_root.to_string_lossy().to_string())
@@ -1312,7 +1504,7 @@ mod tests {
             .unwrap();
 
         scan_all_skills_impl(&pool).await.unwrap();
-        fs::remove_dir_all(&marketplace_skill_dir).unwrap();
+        fs::remove_dir_all(&plugin_skill_dir).unwrap();
         scan_all_skills_impl(&pool).await.unwrap();
 
         let rows = db::get_agent_skill_observations(&pool, "claude-code")
@@ -1327,13 +1519,12 @@ mod tests {
         assert_eq!(
             installs.len(),
             1,
-            "user install state should survive marketplace cleanup"
+            "user install state should survive plugin cleanup"
         );
     }
 
     #[tokio::test]
-    async fn test_scan_all_skills_impl_claude_marketplace_survives_when_user_duplicate_is_removed()
-    {
+    async fn test_scan_all_skills_impl_claude_plugin_survives_when_user_duplicate_is_removed() {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
@@ -1348,9 +1539,10 @@ mod tests {
 
         let claude_root = tmp.path().join(".claude");
         let user_root = claude_root.join("skills");
-        let marketplace_root = claude_root.join("plugins/marketplaces/market-a");
+        let plugin_root = claude_root.join("plugins/cache/publisher/shared-plugin/1.0.0");
+        let plugin_skill_root = plugin_root.join("skills");
         fs::create_dir_all(&user_root).unwrap();
-        fs::create_dir_all(&marketplace_root).unwrap();
+        fs::create_dir_all(&plugin_skill_root).unwrap();
 
         let user_skill_dir = create_skill_dir(
             &user_root,
@@ -1358,10 +1550,11 @@ mod tests {
             &valid_skill_md("Shared Skill", "User copy"),
         );
         create_skill_dir(
-            &marketplace_root,
+            &plugin_skill_root,
             "shared-skill",
-            &valid_skill_md("Shared Skill", "Marketplace copy"),
+            &valid_skill_md("shared-plugin:shared-skill", "Plugin copy"),
         );
+        write_claude_plugin_runtime(&claude_root, &[("shared-plugin@publisher", &plugin_root)]);
 
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
             .bind(user_root.to_string_lossy().to_string())
@@ -1379,22 +1572,22 @@ mod tests {
         assert_eq!(
             rows.len(),
             1,
-            "marketplace observation should survive even after the user duplicate disappears"
+            "plugin observation should survive even after the user duplicate disappears"
         );
-        assert_eq!(rows[0].source_kind, "marketplace");
+        assert_eq!(rows[0].source_kind, "plugin");
 
         let installs = db::get_skill_installations(&pool, "shared-skill")
             .await
             .unwrap();
         assert!(
             installs.is_empty(),
-            "marketplace observations must not keep stale Claude install-state rows alive"
+            "plugin observations must not keep stale Claude install-state rows alive"
         );
 
         let skill = db::get_skill_by_id(&pool, "shared-skill").await.unwrap();
         assert!(
             skill.is_none(),
-            "marketplace observations should not keep a stale manageable skill row alive"
+            "plugin observations should not keep a stale manageable skill row alive"
         );
     }
 

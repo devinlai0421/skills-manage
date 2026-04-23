@@ -25,6 +25,7 @@ import { useCollectionStore } from "@/stores/collectionStore";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useHotkey } from "@/hooks/useHotkey";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
+import { compactHomePath } from "@/lib/path";
 import { buildSearchText, normalizeSearchQuery, scoreSearchMatch } from "@/lib/search";
 
 interface GlobalSearchDialogProps {
@@ -176,10 +177,11 @@ export function GlobalSearchDialog({
       (a) => a.id !== "central" && a.is_enabled
     );
     for (const agent of platformAgents) {
+      const displayPath = compactHomePath(agent.global_skills_dir);
       result.push({
         id: `platform-${agent.id}`,
         label: agent.display_name,
-        description: agent.global_skills_dir,
+        description: displayPath,
         groupKey: "platforms",
         groupLabel: t("globalSearch.platforms"),
         icon: (
@@ -187,7 +189,7 @@ export function GlobalSearchDialog({
         ),
         searchText: buildSearchText([agent.display_name, agent.global_skills_dir]),
         labelText: agent.display_name.toLowerCase(),
-        descriptionText: agent.global_skills_dir.toLowerCase(),
+        descriptionText: displayPath.toLowerCase(),
         onSelect: () => {
           close();
           navigate(`/platform/${agent.id}`);

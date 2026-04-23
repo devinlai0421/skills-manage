@@ -14,6 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { usePlatformStore } from "@/stores/platformStore";
 import { ScanRoot } from "@/types";
+import { describeSkillsPattern } from "@/lib/path";
 
 // ─── DiscoverConfigDialog ────────────────────────────────────────────────────
 
@@ -44,13 +45,10 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
   // Get platform skill directory patterns for display.
   const platformPatterns = agents
     .filter((a) => a.id !== "central" && a.is_enabled)
-    .map((a) => {
-      const rel = a.global_skills_dir.replace(
-        /^.*\/(\.[\w-]+\/skills\/?)$/,
-        "$1"
-      );
-      return { name: a.display_name, pattern: rel || a.global_skills_dir };
-    });
+    .map((a) => ({
+      name: a.display_name,
+      pattern: describeSkillsPattern(a.global_skills_dir),
+    }));
 
   const enabledCount = scanRoots.filter((r) => r.enabled && r.exists).length;
 

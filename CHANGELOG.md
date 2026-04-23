@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.9.0 - 2026-04-23
+
+Cross-platform release centered on Windows support, universal macOS packaging, and reliability fixes.
+
+### Highlights
+
+- Add Windows x64 desktop support with `.msi` installer and portable `.zip` package outputs.
+- Upgrade macOS packaging to universal builds with `.dmg`, `.zip`, and `.tar.gz` release artifacts.
+
+### Features
+
+- Add Windows-aware home and path handling across backend commands, scan-directory settings, and frontend path displays.
+- Add automatic install fallback from symlink to copy on Windows when symlink creation is blocked.
+- Add GitHub Actions packaging and release automation for Windows x64 and macOS universal desktop builds.
+
+### Fixes
+
+- Preserve Claude source-specific platform rows, detail actions, and explanation content across reloads and rescans.
+- Refresh central, platform, and discover surfaces more reliably after global rescans.
+- Improve path labels, sidebar/detail continuity, and a set of small accessibility and interaction refinements across settings and skill views.
+
 ## 0.8.0 - 2026-04-20
 
 First public release.

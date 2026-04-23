@@ -53,20 +53,20 @@ function MetadataRow({ label, value }: { label: string; value: string }) {
 
 function SourceOriginBadge({ originKind }: { originKind: ClaudeSourceKind }) {
   const { t, i18n } = useTranslation();
-  const isMarketplace = originKind === "marketplace";
+  const isPlugin = originKind === "plugin";
 
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1",
-        isMarketplace
+        isPlugin
           ? "bg-amber-500/10 text-amber-700 ring-amber-500/20 dark:text-amber-300"
           : "bg-sky-500/10 text-sky-700 ring-sky-500/20 dark:text-sky-300"
       )}
     >
-      {isMarketplace
-        ? t("platform.originMarketplace", {
-            defaultValue: i18n.language.startsWith("zh") ? "市场来源" : "Marketplace source",
+      {isPlugin
+        ? t("platform.originPlugin", {
+            defaultValue: i18n.language.startsWith("zh") ? "插件来源" : "Plugin source",
           })
         : t("platform.originUser", {
             defaultValue: i18n.language.startsWith("zh") ? "用户来源" : "User source",
@@ -719,8 +719,8 @@ export function SkillDetailView({
                           <p className="text-xs leading-relaxed text-muted-foreground">
                             {t("detail.readOnlyDesc", {
                               defaultValue: i18n.language.startsWith("zh")
-                                ? "市场托管副本仅供查看，不能在这里安装、卸载或调整技能集。"
-                                : "Marketplace-managed copies are display-only here, so install, uninstall, and collection changes are unavailable.",
+                                ? "插件安装的副本仅供查看，不能在这里安装、卸载或调整技能集。"
+                                : "Plugin-installed copies are display-only here, so install, uninstall, and collection changes are unavailable.",
                             })}
                           </p>
                         ) : detail.source_kind === "user" ? (
@@ -778,8 +778,8 @@ export function SkillDetailView({
                         <p className="text-xs leading-relaxed text-muted-foreground">
                           {t("detail.readOnlyInstallBlocked", {
                             defaultValue: i18n.language.startsWith("zh")
-                              ? "市场来源的只读副本不可安装或卸载。"
-                              : "Install and uninstall are unavailable for read-only marketplace copies.",
+                              ? "插件来源的只读副本不可安装或卸载。"
+                              : "Install and uninstall are unavailable for read-only plugin copies.",
                           })}
                         </p>
                       ) : targetAgents.length === 0 ? (
@@ -838,8 +838,8 @@ export function SkillDetailView({
                       <p className="text-xs leading-relaxed text-muted-foreground">
                         {t("detail.readOnlyCollectionsBlocked", {
                           defaultValue: i18n.language.startsWith("zh")
-                            ? "市场来源的只读副本不可调整技能集。"
-                            : "Collection management is unavailable for read-only marketplace copies.",
+                            ? "插件来源的只读副本不可调整技能集。"
+                            : "Collection management is unavailable for read-only plugin copies.",
                         })}
                       </p>
                     ) : (

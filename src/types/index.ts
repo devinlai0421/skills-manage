@@ -33,7 +33,7 @@ export interface ScanResult {
   skills_by_agent: Record<string, number>;
 }
 
-export type ClaudeSourceKind = "user" | "marketplace";
+export type ClaudeSourceKind = "user" | "plugin";
 
 export interface ScannedSkill {
   id: string;

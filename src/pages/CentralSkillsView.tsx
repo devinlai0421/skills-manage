@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { Search, RefreshCw, Blocks, FolderOpen, Settings } from "lucide-react";
+import { Search, RefreshCw, Blocks, FolderOpen, Settings, ArrowUpDown } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -12,12 +12,13 @@ import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import { InstallDialog } from "@/components/central/InstallDialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { AgentWithStatus, SkillWithLinks } from "@/types";
+import { AgentWithStatus, ScannedSkill, SkillWithLinks } from "@/types";
 import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImportWizard";
 import { useMarketplaceStore } from "@/stores/marketplaceStore";
 import { VirtualizedList } from "@/components/ui/virtualized-list";
 import { buildSearchText, normalizeSearchQuery } from "@/lib/search";
 import { isTauriRuntime } from "@/lib/tauri";
+import { cn } from "@/lib/utils";
 
 const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
   {
@@ -59,9 +60,36 @@ const BROWSER_FIXTURE_SKILLS: SkillWithLinks[] = [
     is_central: true,
     source: "browser-fixture",
     scanned_at: "2026-04-17T00:00:00.000Z",
+    created_at: "2026-04-17T00:00:00.000Z",
+    updated_at: "2026-04-17T00:00:00.000Z",
     linked_agents: ["claude-code"],
   },
 ];
+
+const EMPTY_SKILLS: SkillWithLinks[] = [];
+const EMPTY_AGENTS: AgentWithStatus[] = [];
+const EMPTY_SKILLS_BY_AGENT: Record<string, ScannedSkill[]> = {};
+const EMPTY_GITHUB_IMPORT_STATE = {
+  isPreviewLoading: false,
+  isImporting: false,
+  preview: null,
+  importResult: null,
+  previewedRepoUrl: null,
+  error: null,
+};
+const noopLoadCentralSkills = async () => {};
+const noopRefreshCounts = async () => {};
+const noopGetSkillsByAgent = async (_agentId: string) => {};
+const noopPreviewGitHubRepoImport = async () => null;
+const noopResetGitHubImport = () => {};
+const noopTogglePlatformLink = async (_skillId: string, _agentId: string) => {};
+const noopInstallSkill = async () => ({
+  succeeded: [],
+  failed: [],
+});
+const noopImportGitHubRepoSkills = async () => {
+  throw new Error("GitHub import is unavailable");
+};
 
 // ─── Empty State ──────────────────────────────────────────────────────────────
 
@@ -113,6 +141,23 @@ function FirstVisitEmptyState() {
   );
 }
 
+function parseSortableTimestamp(value?: string | null): number {
+  if (!value) return 0;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function getSkillSortTimestamp(
+  skill: SkillWithLinks,
+  field: "createdAt" | "updatedAt"
+): number {
+  return parseSortableTimestamp(
+    field === "createdAt"
+      ? skill.created_at ?? skill.scanned_at
+      : skill.updated_at ?? skill.scanned_at
+  );
+}
+
 // ─── CentralSkillsView ────────────────────────────────────────────────────────
 
 export function CentralSkillsView() {
@@ -128,39 +173,44 @@ export function CentralSkillsView() {
     rawSkills === undefined &&
     rawAgents === undefined &&
     rawLoadCentralSkills === undefined;
-  const skills = shouldUseBrowserFixtures ? BROWSER_FIXTURE_SKILLS : rawSkills ?? [];
-  const agents = shouldUseBrowserFixtures ? BROWSER_FIXTURE_AGENTS : rawAgents ?? [];
+  const skills = shouldUseBrowserFixtures
+    ? BROWSER_FIXTURE_SKILLS
+    : (rawSkills ?? EMPTY_SKILLS);
+  const agents = shouldUseBrowserFixtures
+    ? BROWSER_FIXTURE_AGENTS
+    : (rawAgents ?? EMPTY_AGENTS);
   const isLoading = shouldUseBrowserFixtures ? false : rawIsLoading ?? false;
-  const loadCentralSkills = rawLoadCentralSkills ?? (async () => {});
-  const installSkill = useCentralSkillsStore((state) => state.installSkill) ?? (async () => ({
-    succeeded: [],
-    failed: [],
-  }));
-  const togglePlatformLink = useCentralSkillsStore((state) => state.togglePlatformLink) ?? (async () => {});
+  const loadCentralSkills = rawLoadCentralSkills ?? noopLoadCentralSkills;
+  const installSkill =
+    useCentralSkillsStore((state) => state.installSkill) ?? noopInstallSkill;
+  const togglePlatformLink =
+    useCentralSkillsStore((state) => state.togglePlatformLink) ??
+    noopTogglePlatformLink;
   const togglingAgentId = useCentralSkillsStore((state) => state.togglingAgentId);
 
   // Keep the platform sidebar counts in sync after install.
-  const refreshCounts = usePlatformStore((state) => state.refreshCounts) ?? (async () => {});
-  const platformAgents = usePlatformStore((state) => state.agents) ?? [];
-  const skillsByAgent = useSkillStore((state) => state.skillsByAgent) ?? {};
-  const getSkillsByAgent = useSkillStore((state) => state.getSkillsByAgent) ?? (async () => {});
-  const githubImport = useMarketplaceStore((state) => state.githubImport) ?? {
-    isPreviewLoading: false,
-    isImporting: false,
-    preview: null,
-    importResult: null,
-    previewedRepoUrl: null,
-    error: null,
-  };
+  const refreshCounts =
+    usePlatformStore((state) => state.refreshCounts) ?? noopRefreshCounts;
+  const platformAgents = usePlatformStore((state) => state.agents) ?? EMPTY_AGENTS;
+  const skillsByAgent =
+    useSkillStore((state) => state.skillsByAgent) ?? EMPTY_SKILLS_BY_AGENT;
+  const getSkillsByAgent =
+    useSkillStore((state) => state.getSkillsByAgent) ?? noopGetSkillsByAgent;
+  const githubImport =
+    useMarketplaceStore((state) => state.githubImport) ?? EMPTY_GITHUB_IMPORT_STATE;
   const previewGitHubRepoImport =
-    useMarketplaceStore((state) => state.previewGitHubRepoImport) ?? (async () => null);
+    useMarketplaceStore((state) => state.previewGitHubRepoImport) ??
+    noopPreviewGitHubRepoImport;
   const importGitHubRepoSkills =
-    useMarketplaceStore((state) => state.importGitHubRepoSkills) ?? (async () => {
-      throw new Error("GitHub import is unavailable");
-    });
+    useMarketplaceStore((state) => state.importGitHubRepoSkills) ??
+    noopImportGitHubRepoSkills;
   const resetGitHubImport =
-    useMarketplaceStore((state) => state.resetGitHubImport) ?? (() => {});
+    useMarketplaceStore((state) => state.resetGitHubImport) ?? noopResetGitHubImport;
 
+  type SortField = "name" | "createdAt" | "updatedAt";
+  type SortDirection = "asc" | "desc";
+  const [sortField, setSortField] = useState<SortField>("name");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [searchQuery, setSearchQuery] = useState("");
   const [installTargetSkill, setInstallTargetSkill] =
     useState<SkillWithLinks | null>(null);
@@ -201,6 +251,28 @@ export function CentralSkillsView() {
       .map(({ skill }) => skill);
   }, [normalizedSearchQuery, searchableSkills, skills]);
 
+  // Sort filtered skills.
+  const sortedSkills = useMemo(() => {
+    const list = [...filteredSkills];
+    const direction = sortDirection === "asc" ? 1 : -1;
+    return list.sort((a, b) => {
+      const nameComparison = a.name.localeCompare(b.name, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+
+      if (sortField === "name") {
+        return nameComparison * direction;
+      }
+
+      const leftTime = getSkillSortTimestamp(a, sortField);
+      const rightTime = getSkillSortTimestamp(b, sortField);
+      const timeComparison = leftTime - rightTime;
+
+      return timeComparison === 0 ? nameComparison : timeComparison * direction;
+    });
+  }, [filteredSkills, sortDirection, sortField]);
+
   useEffect(() => {
     if (!isSearchActive || !contentRef.current) return;
     contentRef.current.scrollTop = 0;
@@ -210,6 +282,17 @@ export function CentralSkillsView() {
     setInstallTargetSkill(skill);
     setIsDialogOpen(true);
   }
+
+  const sortFieldOptions: Array<{ value: SortField; label: string }> = [
+    { value: "name", label: t("central.sortByName") },
+    { value: "createdAt", label: t("central.sortByCreatedAt") },
+    { value: "updatedAt", label: t("central.sortByUpdatedAt") },
+  ];
+
+  const sortDirectionOptions: Array<{ value: SortDirection; label: string }> = [
+    { value: "asc", label: t("central.sortAscending") },
+    { value: "desc", label: t("central.sortDescending") },
+  ];
 
   function setDetailButtonRef(skillId: string, node: HTMLButtonElement | null) {
     detailButtonRefs.current[skillId] = node;
@@ -346,15 +429,69 @@ export function CentralSkillsView() {
 
       {/* Search bar */}
       <div className="px-6 py-3 border-b border-border">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
-          <Input
-            placeholder={t("central.searchPlaceholder")}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-8 bg-muted/40"
-            aria-label={t("central.searchPlaceholder")}
-          />
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+            <Input
+              placeholder={t("central.searchPlaceholder")}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 bg-muted/40"
+              aria-label={t("central.searchPlaceholder")}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <ArrowUpDown className="size-3.5" />
+              <span>{t("central.sortLabel")}</span>
+            </div>
+            <div
+              role="group"
+              aria-label={t("central.sortFieldLabel")}
+              className="flex rounded-xl bg-muted/40 p-1"
+            >
+              {sortFieldOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={sortField === option.value}
+                  onClick={() => setSortField(option.value)}
+                  className={cn(
+                    "h-7 rounded-lg px-3 text-xs font-medium transition-colors cursor-pointer",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                    sortField === option.value
+                      ? "bg-background/95 text-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div
+              role="group"
+              aria-label={t("central.sortDirectionLabel")}
+              className="flex rounded-xl bg-muted/40 p-1"
+            >
+              {sortDirectionOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={sortDirection === option.value}
+                  onClick={() => setSortDirection(option.value)}
+                  className={cn(
+                    "h-7 rounded-lg px-3 text-xs font-medium transition-colors cursor-pointer",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                    sortDirection === option.value
+                      ? "bg-background/95 text-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -367,9 +504,9 @@ export function CentralSkillsView() {
         ) : filteredSkills.length === 0 ? (
           <EmptyState message={t("central.noMatch", { query: searchQuery })} />
         ) : isSearchActive ? (
-          filteredSkills.length > 60 ? (
+          sortedSkills.length > 60 ? (
             <VirtualizedList
-              items={filteredSkills}
+              items={sortedSkills}
               itemHeight={104}
               itemGap={12}
               overscan={8}
@@ -379,12 +516,12 @@ export function CentralSkillsView() {
             />
           ) : (
             <div className="space-y-3">
-              {filteredSkills.map((skill) => renderSearchResult(skill))}
+              {sortedSkills.map((skill) => renderSearchResult(skill))}
             </div>
           )
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {filteredSkills.map((skill) => (
+            {sortedSkills.map((skill) => (
               <UnifiedSkillCard
                 key={skill.id}
                 name={skill.name}

@@ -137,7 +137,7 @@ describe("Sidebar", () => {
   it("renders Collections icon button", () => {
     renderSidebar();
     // Use exact string match to avoid also matching "导入技能集"
-    expect(screen.getByRole("button", { name: "技能集" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "技能集合" })).toBeInTheDocument();
   });
 
   it("new/import collection buttons are on the list page, not sidebar", () => {
@@ -195,14 +195,13 @@ describe("Sidebar", () => {
   it("highlights active platform route in sidebar", () => {
     renderSidebar("/platform/claude-code");
     const claudeButton = screen.getByRole("button", { name: /Claude Code/ });
-    // Active item should have the active class (bg-primary/20)
-    expect(claudeButton.className).toContain("bg-primary/20");
+    expect(claudeButton.className).toContain("bg-hover-bg");
   });
 
   it("highlights Central Skills when on /central", () => {
     renderSidebar("/central");
     const centralButton = screen.getByRole("button", { name: /中央技能库/ });
-    expect(centralButton.className).toContain("bg-primary/20");
+    expect(centralButton.className).toContain("bg-hover-bg");
   });
 
   it("does not highlight Settings in sidebar (moved to TopBar)", () => {
@@ -265,7 +264,7 @@ describe("Sidebar", () => {
       })
     );
     renderSidebar();
-    expect(screen.getByRole("button", { name: "技能集" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "技能集合" })).toBeInTheDocument();
   });
 
   it("highlights active collection route", () => {
@@ -279,20 +278,20 @@ describe("Sidebar", () => {
     );
     vi.mocked(usePlatformStore).mockReturnValue(defaultStoreState);
     render(
-      <MemoryRouter initialEntries={["/collection/col-1"]}>
+      <MemoryRouter initialEntries={["/collections"]}>
         <Sidebar />
       </MemoryRouter>
     );
     // The collections icon button should be highlighted (exact match)
-    const colButton = screen.getByRole("button", { name: "技能集" });
-    expect(colButton.className).toContain("bg-primary/20");
+    const colButton = screen.getByRole("button", { name: "技能集合" });
+    expect(colButton.className).toContain("bg-hover-bg");
   });
 
   // ── Discover ─────────────────────────────────────────────────────────────
 
   it("renders Discover entry in sidebar", () => {
     renderSidebar();
-    expect(screen.getByRole("button", { name: "已发现" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "项目技能库" })).toBeInTheDocument();
   });
 
   // ── Collapse Toggle ───────────────────────────────────────────────────────

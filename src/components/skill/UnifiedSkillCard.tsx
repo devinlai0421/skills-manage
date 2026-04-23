@@ -15,6 +15,7 @@ import {
 import type { MouseEventHandler, Ref } from "react";
 import { useTranslation } from "react-i18next";
 import { Checkbox } from "@/components/ui/checkbox";
+import { InlineConfirmAction } from "@/components/ui/inline-confirm-action";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import type { AgentWithStatus, ClaudeSourceKind } from "@/types";
 import { cn } from "@/lib/utils";
@@ -95,6 +96,8 @@ export interface UnifiedSkillCardProps {
   onInstallTo?: () => void;
   onInstallToCentral?: () => void;
   onInstallToPlatform?: () => void;
+  onUninstallFromPlatform?: () => void;
+  uninstallFromLabel?: string;
   onInstall?: () => void;
   onRemove?: () => void;
   isLoading?: boolean;
@@ -125,6 +128,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onInstallTo,
     onInstallToCentral,
     onInstallToPlatform,
+    onUninstallFromPlatform,
+    uninstallFromLabel,
     onInstall,
     onRemove,
     isLoading,
@@ -134,7 +139,15 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
   // Determine variant features
   const hasCheckbox = !!checkbox;
   const hasPlatformIcons = !!platformIcons;
-  const hasActions = !!(onDetail || onInstallTo || onInstallToCentral || onInstallToPlatform || onInstall || onRemove);
+  const hasActions = !!(
+    onDetail ||
+    onInstallTo ||
+    onInstallToCentral ||
+    onInstallToPlatform ||
+    onUninstallFromPlatform ||
+    onInstall ||
+    onRemove
+  );
 
   // Split agents by category for platform icons
   const lobsterAgents = platformIcons?.agents.filter((a) => a.id !== "central" && a.category === "lobster") ?? [];
@@ -215,9 +228,10 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                 {onInstallTo && (
                   <button
                     onClick={onInstallTo}
+                    disabled={isLoading}
                     title={t("central.installTo")}
                     aria-label={t("central.installLabel", { name })}
-                    className="p-1 rounded-md transition-colors text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:opacity-50 disabled:cursor-default"
                   >
                     <PackagePlus className="size-4" />
                   </button>
@@ -230,7 +244,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                     disabled={isLoading}
                     title={t("discover.installToCentral")}
                     aria-label={t("discover.installToCentral")}
-                    className="p-1 rounded-md transition-colors text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:opacity-50 disabled:cursor-default"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:opacity-50 disabled:cursor-default"
                   >
                     {isLoading ? <Loader2 className="size-4 animate-spin" /> : <ArrowUpRight className="size-4" />}
                   </button>
@@ -243,10 +257,21 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                     disabled={isLoading}
                     title={t("discover.installToPlatform")}
                     aria-label={t("discover.installToPlatform")}
-                    className="p-1 rounded-md transition-colors text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:opacity-50 disabled:cursor-default"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:opacity-50 disabled:cursor-default"
                   >
                     {isLoading ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
                   </button>
+                )}
+
+                {onUninstallFromPlatform && (
+                  <InlineConfirmAction
+                    onConfirm={onUninstallFromPlatform}
+                    isLoading={isLoading}
+                    idleTitle={uninstallFromLabel ?? t("common.uninstall")}
+                    idleAriaLabel={uninstallFromLabel ?? t("common.uninstall")}
+                    confirmLabel={t("common.confirmDelete")}
+                    icon={<X className="size-4" />}
+                  />
                 )}
 
                 {/* Marketplace installed indicator (disabled Check icon) */}
@@ -255,7 +280,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                     disabled
                     title={t("marketplace.installed")}
                     aria-label={t("marketplace.installed")}
-                    className="p-1 rounded-md text-primary cursor-default"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-primary cursor-default"
                   >
                     <Check className="size-4" />
                   </button>
@@ -263,14 +288,14 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
 
                 {/* Remove (collection) */}
                 {onRemove && (
-                  <button
-                    onClick={onRemove}
-                    title={t("collection.removeSkillLabel", { name })}
-                    aria-label={t("collection.removeSkillLabel", { name })}
-                    className="p-1 rounded-md transition-colors text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                  >
-                    <X className="size-4" />
-                  </button>
+                  <InlineConfirmAction
+                    onConfirm={onRemove}
+                    isLoading={isLoading}
+                    idleTitle={t("collection.removeSkillLabel", { name })}
+                    idleAriaLabel={t("collection.removeSkillLabel", { name })}
+                    confirmLabel={t("common.confirmDelete")}
+                    icon={<X className="size-4" />}
+                  />
                 )}
               </div>
             )}
@@ -414,20 +439,20 @@ function SourceIndicator({ sourceType }: { sourceType: string }) {
 
 function SourceOriginBadge({ originKind }: { originKind: ClaudeSourceKind }) {
   const { t, i18n } = useTranslation();
-  const isMarketplace = originKind === "marketplace";
+  const isPlugin = originKind === "plugin";
 
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1",
-        isMarketplace
+        isPlugin
           ? "bg-amber-500/10 text-amber-700 ring-amber-500/20 dark:text-amber-300"
           : "bg-sky-500/10 text-sky-700 ring-sky-500/20 dark:text-sky-300"
       )}
     >
-      {isMarketplace
-        ? t("platform.originMarketplace", {
-            defaultValue: i18n.language.startsWith("zh") ? "市场来源" : "Marketplace source",
+      {isPlugin
+        ? t("platform.originPlugin", {
+            defaultValue: i18n.language.startsWith("zh") ? "插件来源" : "Plugin source",
           })
         : t("platform.originUser", {
             defaultValue: i18n.language.startsWith("zh") ? "用户来源" : "User source",

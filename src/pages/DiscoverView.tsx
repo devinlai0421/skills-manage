@@ -26,6 +26,7 @@ import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { consumeScrollPosition } from "@/lib/scrollRestoration";
 import { VirtualizedList } from "@/components/ui/virtualized-list";
+import { getPathBasename } from "@/lib/path";
 import { buildSearchText, normalizeSearchQuery } from "@/lib/search";
 
 // ─── Empty State ──────────────────────────────────────────────────────────────
@@ -639,12 +640,12 @@ export function DiscoverView() {
                         projectBadge={skill.project_name}
                         onDetail={
                           skill.is_already_central
-                            ? () => handleOpenDrawer(skill.dir_path.split("/").pop() ?? skill.id)
+                            ? () => handleOpenDrawer(getPathBasename(skill.dir_path) ?? skill.id)
                             : () => handleOpenDiscoverDrawer(skill)
                         }
                         detailButtonRef={(node) => setDetailButtonRef(
                           skill.is_already_central
-                            ? (skill.dir_path.split("/").pop() ?? skill.id)
+                            ? (getPathBasename(skill.dir_path) ?? skill.id)
                             : skill.id,
                           node,
                         )}
@@ -671,12 +672,12 @@ export function DiscoverView() {
                         projectBadge={skill.project_name}
                         onDetail={
                           skill.is_already_central
-                            ? () => handleOpenDrawer(skill.dir_path.split("/").pop() ?? skill.id)
+                            ? () => handleOpenDrawer(getPathBasename(skill.dir_path) ?? skill.id)
                             : () => handleOpenDiscoverDrawer(skill)
                         }
                         detailButtonRef={(node) => setDetailButtonRef(
                           skill.is_already_central
-                            ? (skill.dir_path.split("/").pop() ?? skill.id)
+                            ? (getPathBasename(skill.dir_path) ?? skill.id)
                             : skill.id,
                           node,
                         )}

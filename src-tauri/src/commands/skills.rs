@@ -467,7 +467,7 @@ mod tests {
             source_root: if source_kind == "user" {
                 "/tmp/.claude/skills".to_string()
             } else {
-                "/tmp/.claude/plugins/marketplaces/market-a".to_string()
+                "/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0".to_string()
             },
             link_type: "copy".to_string(),
             symlink_target: None,
@@ -565,7 +565,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_central_skills_ignores_claude_marketplace_observations() {
+    async fn test_get_central_skills_ignores_claude_plugin_observations() {
         let pool = setup_test_db().await;
 
         let central_skill = make_skill("shared-skill", "Shared Skill", true);
@@ -573,11 +573,11 @@ mod tests {
         db::upsert_agent_skill_observation(
             &pool,
             &make_observation(
-                "claude-code::/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
+                "claude-code::/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill",
                 "shared-skill",
                 "Shared Skill",
-                "/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
-                "marketplace",
+                "/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill",
+                "plugin",
                 true,
             ),
         )
@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(skills_with_links.len(), 1);
         assert!(
             skills_with_links[0].linked_agents.is_empty(),
-            "marketplace observations must not pollute linked_agents state"
+            "plugin observations must not pollute linked_agents state"
         );
     }
 
@@ -854,11 +854,11 @@ mod tests {
         db::upsert_agent_skill_observation(
             &pool,
             &make_observation(
-                "claude-code::/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
+                "claude-code::/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill",
                 "shared-skill",
                 "Shared Skill",
-                "/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
-                "marketplace",
+                "/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill",
+                "plugin",
                 true,
             ),
         )
@@ -900,11 +900,11 @@ mod tests {
         db::upsert_agent_skill_observation(
             &pool,
             &make_observation(
-                "claude-code::/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
+                "claude-code::/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill",
                 "shared-skill",
                 "Shared Skill",
-                "/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
-                "marketplace",
+                "/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill",
+                "plugin",
                 true,
             ),
         )
@@ -919,17 +919,17 @@ mod tests {
         assert_eq!(skills.len(), 2);
         assert_eq!(
             skills[0].row_id,
-            "claude-code::/tmp/.claude/plugins/marketplaces/market-a/shared-skill"
+            "claude-code::/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill"
         );
         assert_eq!(
             skills[1].row_id,
             "claude-code::/tmp/.claude/skills/shared-skill"
         );
-        assert_eq!(skills[0].source_kind.as_deref(), Some("marketplace"));
+        assert_eq!(skills[0].source_kind.as_deref(), Some("plugin"));
         assert_eq!(skills[1].source_kind.as_deref(), Some("user"));
         assert_eq!(
             skills[0].source_root.as_deref(),
-            Some("/tmp/.claude/plugins/marketplaces/market-a")
+            Some("/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0")
         );
         assert_eq!(
             skills[1].source_root.as_deref(),
@@ -950,8 +950,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_skill_detail_with_row_impl_claude_marketplace_row_uses_selected_observation()
-    {
+    async fn test_get_skill_detail_with_row_impl_claude_plugin_row_uses_selected_observation() {
         let pool = setup_test_db().await;
 
         let skill = make_skill("shared-skill", "Shared Skill", false);
@@ -991,11 +990,11 @@ mod tests {
         db::upsert_agent_skill_observation(
             &pool,
             &make_observation(
-                "claude-code::/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
+                "claude-code::/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill",
                 "shared-skill",
                 "Shared Skill",
-                "/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
-                "marketplace",
+                "/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill",
+                "plugin",
                 true,
             ),
         )
@@ -1006,27 +1005,27 @@ mod tests {
             &pool,
             "shared-skill",
             Some("claude-code"),
-            Some("claude-code::/tmp/.claude/plugins/marketplaces/market-a/shared-skill"),
+            Some("claude-code::/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill"),
         )
         .await
         .unwrap();
 
         assert_eq!(
             detail.row_id,
-            "claude-code::/tmp/.claude/plugins/marketplaces/market-a/shared-skill"
+            "claude-code::/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill"
         );
         assert_eq!(
             detail.dir_path,
-            "/tmp/.claude/plugins/marketplaces/market-a/shared-skill"
+            "/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill"
         );
         assert_eq!(
             detail.file_path,
-            "/tmp/.claude/plugins/marketplaces/market-a/shared-skill/SKILL.md"
+            "/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill/SKILL.md"
         );
-        assert_eq!(detail.source_kind.as_deref(), Some("marketplace"));
+        assert_eq!(detail.source_kind.as_deref(), Some("plugin"));
         assert_eq!(
             detail.source_root.as_deref(),
-            Some("/tmp/.claude/plugins/marketplaces/market-a")
+            Some("/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0")
         );
         assert!(detail.is_read_only);
         assert_eq!(detail.conflict_count, 2);
@@ -1036,11 +1035,11 @@ mod tests {
         );
         assert!(
             detail.installations.is_empty(),
-            "marketplace detail should not expose manageable installations"
+            "plugin detail should not expose manageable installations"
         );
         assert!(
             detail.collections.is_empty(),
-            "marketplace detail should not expose collection management state"
+            "plugin detail should not expose collection management state"
         );
     }
 
@@ -1085,11 +1084,11 @@ mod tests {
         db::upsert_agent_skill_observation(
             &pool,
             &make_observation(
-                "claude-code::/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
+                "claude-code::/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill",
                 "shared-skill",
                 "Shared Skill",
-                "/tmp/.claude/plugins/marketplaces/market-a/shared-skill",
-                "marketplace",
+                "/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0/shared-skill",
+                "plugin",
                 true,
             ),
         )

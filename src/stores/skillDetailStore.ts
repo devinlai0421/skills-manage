@@ -289,7 +289,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
   },
 
   /**
-   * Install the skill to the given agent via symlink.
+   * Install the skill to the given agent via the backend default method.
    * Reloads detail afterward so installation status updates.
    */
   installSkill: async (skillId: string, agentId: string) => {
@@ -305,7 +305,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
       await invoke("install_skill_to_agent", {
         skillId,
         agentId,
-        method: "symlink",
+        method: "auto",
       });
       // Reload detail so the installations list reflects the new install.
       const detailRequest = getActiveDetailRequest(skillId);

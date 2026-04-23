@@ -70,17 +70,17 @@ const mockDetailAfterUninstall: SkillDetail = {
   installations: [],
 };
 
-const mockClaudeMarketplaceDetail: SkillDetail = {
+const mockClaudePluginDetail: SkillDetail = {
   ...mockDetail,
-  row_id: "claude-code::marketplace::frontend-design",
+  row_id: "claude-code::plugin::frontend-design",
   file_path:
-    "~/.claude/plugins/marketplaces/publisher/frontend-design/SKILL.md",
-  dir_path: "~/.claude/plugins/marketplaces/publisher/frontend-design",
+    "~/.claude/plugins/cache/publisher/frontend-design/unknown/skills/frontend-design/SKILL.md",
+  dir_path: "~/.claude/plugins/cache/publisher/frontend-design/unknown/skills/frontend-design",
   canonical_path: undefined,
   is_central: false,
-  source: "marketplace",
-  source_kind: "marketplace",
-  source_root: "~/.claude/plugins/marketplaces/publisher",
+  source: "plugin",
+  source_kind: "plugin",
+  source_root: "~/.claude/plugins/cache/publisher/frontend-design/unknown",
   is_read_only: true,
   installations: [],
 };
@@ -153,12 +153,12 @@ describe("skillDetailStore", () => {
     await useSkillDetailStore.getState().loadDetail({
       skillId: "frontend-design",
       agentId: "claude-code",
-      rowId: "claude-code::marketplace::frontend-design",
+      rowId: "claude-code::plugin::frontend-design",
     });
     expect(invoke).toHaveBeenCalledWith("get_skill_detail", {
       skillId: "frontend-design",
       agentId: "claude-code",
-      rowId: "claude-code::marketplace::frontend-design",
+      rowId: "claude-code::plugin::frontend-design",
     });
   });
 
@@ -172,7 +172,7 @@ describe("skillDetailStore", () => {
 
   it("reads content from the resolved Claude row path even when the caller omits rowId", async () => {
     vi.mocked(invoke)
-      .mockResolvedValueOnce(mockClaudeMarketplaceDetail)
+      .mockResolvedValueOnce(mockClaudePluginDetail)
       .mockResolvedValueOnce(mockContent);
 
     await useSkillDetailStore.getState().loadDetail({
@@ -185,7 +185,7 @@ describe("skillDetailStore", () => {
       agentId: "claude-code",
     });
     expect(invoke).toHaveBeenNthCalledWith(2, "read_file_by_path", {
-      path: mockClaudeMarketplaceDetail.file_path,
+      path: mockClaudePluginDetail.file_path,
     });
     expect(useSkillDetailStore.getState().content).toBe(mockContent);
   });
@@ -225,7 +225,7 @@ describe("skillDetailStore", () => {
 
   // ── installSkill ──────────────────────────────────────────────────────────
 
-  it("calls install_skill_to_agent with skillId, agentId and method=symlink", async () => {
+  it("calls install_skill_to_agent with skillId, agentId and method=auto", async () => {
     vi.mocked(invoke)
       .mockResolvedValueOnce(undefined) // install_skill_to_agent
       .mockResolvedValueOnce(mockDetailAfterInstall); // get_skill_detail refresh
@@ -233,7 +233,7 @@ describe("skillDetailStore", () => {
     expect(invoke).toHaveBeenCalledWith("install_skill_to_agent", {
       skillId: "frontend-design",
       agentId: "cursor",
-      method: "symlink",
+      method: "auto",
     });
   });
 
@@ -640,18 +640,18 @@ describe("skillDetailStore", () => {
   });
 
   it("loads cached explanations with a row-aware Claude key", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce("Marketplace-specific explanation");
+    vi.mocked(invoke).mockResolvedValueOnce("Plugin-specific explanation");
 
     await useSkillDetailStore
       .getState()
-      .loadCachedExplanation("claude-code::marketplace::frontend-design", "zh");
+      .loadCachedExplanation("claude-code::plugin::frontend-design", "zh");
 
     expect(invoke).toHaveBeenCalledWith("get_skill_explanation", {
-      skillId: "claude-code::marketplace::frontend-design",
+      skillId: "claude-code::plugin::frontend-design",
       lang: "zh",
     });
     expect(useSkillDetailStore.getState().explanation).toBe(
-      "Marketplace-specific explanation"
+      "Plugin-specific explanation"
     );
   });
 
@@ -661,13 +661,13 @@ describe("skillDetailStore", () => {
     await useSkillDetailStore
       .getState()
       .generateExplanation(
-        "claude-code::marketplace::frontend-design",
+        "claude-code::plugin::frontend-design",
         mockContent,
         "zh"
       );
 
     expect(invoke).toHaveBeenCalledWith("explain_skill_stream", {
-      skillId: "claude-code::marketplace::frontend-design",
+      skillId: "claude-code::plugin::frontend-design",
       content: mockContent,
       lang: "zh",
     });
