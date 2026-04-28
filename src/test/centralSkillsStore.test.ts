@@ -74,6 +74,7 @@ describe("centralSkillsStore", () => {
       agents: [],
       isLoading: false,
       isInstalling: false,
+      deletingSkillId: null,
       togglingAgentId: null,
       error: null,
     });
@@ -88,6 +89,7 @@ describe("centralSkillsStore", () => {
     expect(state.agents).toEqual([]);
     expect(state.isLoading).toBe(false);
     expect(state.isInstalling).toBe(false);
+    expect(state.deletingSkillId).toBeNull();
     expect(state.togglingAgentId).toBeNull();
     expect(state.error).toBeNull();
   });
@@ -224,6 +226,52 @@ describe("centralSkillsStore", () => {
     const state = useCentralSkillsStore.getState();
     expect(state.error).toContain("symlink failed");
     expect(state.isInstalling).toBe(false);
+  });
+
+  it("deletes a central skill and refreshes central skills", async () => {
+    const updatedSkills = [mockSkills[1]];
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({
+        skill_id: "frontend-design",
+        removed_agent_links: ["claude-code", "cursor"],
+        removed_central_path: "~/.agents/skills/frontend-design",
+      })
+      .mockResolvedValueOnce(updatedSkills);
+
+    await useCentralSkillsStore.getState().deleteCentralSkill("frontend-design");
+
+    expect(invoke).toHaveBeenCalledWith("delete_central_skill", {
+      skillId: "frontend-design",
+    });
+    expect(invoke).toHaveBeenCalledWith("get_central_skills");
+    expect(useCentralSkillsStore.getState().skills).toEqual(updatedSkills);
+    expect(useCentralSkillsStore.getState().deletingSkillId).toBeNull();
+  });
+
+  it("sets deletingSkillId while deleting a central skill", async () => {
+    let resolveDelete!: () => void;
+    vi.mocked(invoke)
+      .mockReturnValueOnce(new Promise<void>((resolve) => {
+        resolveDelete = resolve;
+      }))
+      .mockResolvedValueOnce(mockSkills);
+
+    const promise = useCentralSkillsStore.getState().deleteCentralSkill("frontend-design");
+
+    expect(useCentralSkillsStore.getState().deletingSkillId).toBe("frontend-design");
+    resolveDelete();
+    await promise;
+    expect(useCentralSkillsStore.getState().deletingSkillId).toBeNull();
+  });
+
+  it("rejects concurrent central skill deletion requests", async () => {
+    useCentralSkillsStore.setState({ deletingSkillId: "frontend-design" });
+
+    await expect(
+      useCentralSkillsStore.getState().deleteCentralSkill("code-reviewer")
+    ).rejects.toThrow("Another central skill deletion is already running");
+
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   // ── togglePlatformLink ────────────────────────────────────────────────────

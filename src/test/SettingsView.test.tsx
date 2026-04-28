@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { SettingsView } from "../pages/SettingsView";
-import { ScanDirectory, AgentWithStatus } from "../types";
+import { AgentWithStatus, CentralRepositoryConfig, CentralRepositoryStatus, ScanDirectory } from "../types";
 import { invoke } from "@tauri-apps/api/core";
 
 // Mock stores
@@ -71,6 +71,21 @@ const mockBuiltinAgent: AgentWithStatus = {
   is_enabled: true,
 };
 
+const mockCentralRepositoryConfig: CentralRepositoryConfig = {
+  local_path: "/Users/test/skills",
+  remote_url: "https://example.com/skills.git",
+};
+
+const mockCentralRepositoryStatus: CentralRepositoryStatus = {
+  is_git_repository: true,
+  branch: "main",
+  remote_url: "https://example.com/skills.git",
+  has_changes: true,
+  ahead: 1,
+  behind: 2,
+  last_error: null,
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function setupMocks({
@@ -90,6 +105,17 @@ function setupMocks({
   loadGitHubPat = vi.fn(),
   saveGitHubPat = vi.fn(),
   clearGitHubPat = vi.fn(),
+  centralRepositoryConfig = mockCentralRepositoryConfig,
+  centralRepositoryStatus = mockCentralRepositoryStatus,
+  isLoadingCentralRepository = false,
+  isSavingCentralRepository = false,
+  isRunningCentralRepositoryGit = false,
+  loadCentralRepositoryConfig = vi.fn(),
+  refreshCentralRepositoryStatus = vi.fn(),
+  saveCentralRepositoryConfig = vi.fn(),
+  initializeCentralRepository = vi.fn(),
+  pullCentralRepository = vi.fn(),
+  pushCentralRepository = vi.fn(),
   rescan = vi.fn(),
   refreshCounts = vi.fn(),
   flavor = "mocha" as const,
@@ -115,6 +141,17 @@ function setupMocks({
       loadGitHubPat,
       saveGitHubPat,
       clearGitHubPat,
+      centralRepositoryConfig,
+      centralRepositoryStatus,
+      isLoadingCentralRepository,
+      isSavingCentralRepository,
+      isRunningCentralRepositoryGit,
+      loadCentralRepositoryConfig,
+      refreshCentralRepositoryStatus,
+      saveCentralRepositoryConfig,
+      initializeCentralRepository,
+      pullCentralRepository,
+      pushCentralRepository,
       clearError: vi.fn(),
     })
   );
@@ -197,6 +234,13 @@ describe("SettingsView", () => {
     expect(loadGitHubPat).toHaveBeenCalled();
   });
 
+  it("calls loadCentralRepositoryConfig on mount", () => {
+    const loadCentralRepositoryConfig = vi.fn();
+    setupMocks({ loadCentralRepositoryConfig });
+    renderSettingsView();
+    expect(loadCentralRepositoryConfig).toHaveBeenCalled();
+  });
+
   it("renders the saved github pat value and explanation copy", () => {
     setupMocks({ githubPat: "github_pat_saved" });
     renderSettingsView();
@@ -233,6 +277,92 @@ describe("SettingsView", () => {
       expect(clearGitHubPat).toHaveBeenCalled();
     });
     expect(await screen.findByText("GitHub 令牌已清除")).toBeTruthy();
+  });
+
+  // ── Central Repository section ────────────────────────────────────────────
+
+  it("renders central repository config and status", () => {
+    setupMocks();
+    renderSettingsView();
+
+    expect(screen.getByText("中央仓库")).toBeTruthy();
+    expect(screen.getByLabelText("本地路径")).toHaveValue("/Users/test/skills");
+    expect(screen.getByLabelText("远程 URL")).toHaveValue("https://example.com/skills.git");
+    expect(screen.getByText("main")).toBeTruthy();
+    expect(screen.getByText("有未提交变更")).toBeTruthy();
+    expect(screen.getByText("ahead 1 / behind 2")).toBeTruthy();
+  });
+
+  it("saves central repository config", async () => {
+    const saveCentralRepositoryConfig = vi.fn().mockResolvedValue(mockCentralRepositoryConfig);
+    setupMocks({ saveCentralRepositoryConfig });
+    renderSettingsView();
+
+    fireEvent.change(screen.getByLabelText("本地路径"), {
+      target: { value: "/Users/test/new-skills" },
+    });
+    fireEvent.change(screen.getByLabelText("远程 URL"), {
+      target: { value: "https://example.com/new.git" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存中央仓库配置" }));
+
+    await waitFor(() => {
+      expect(saveCentralRepositoryConfig).toHaveBeenCalledWith(
+        "/Users/test/new-skills",
+        "https://example.com/new.git"
+      );
+    });
+  });
+
+  it("initializes central repository", async () => {
+    const initializeCentralRepository = vi.fn().mockResolvedValue({
+      output: "Initialized empty Git repository",
+      status: mockCentralRepositoryStatus,
+    });
+    setupMocks({ initializeCentralRepository });
+    renderSettingsView();
+
+    fireEvent.click(screen.getByRole("button", { name: "初始化/绑定仓库" }));
+
+    await waitFor(() => {
+      expect(initializeCentralRepository).toHaveBeenCalledWith(
+        "/Users/test/skills",
+        "https://example.com/skills.git"
+      );
+    });
+  });
+
+  it("runs central repository pull and push", async () => {
+    const pullCentralRepository = vi.fn().mockResolvedValue({
+      output: "Already up to date.",
+      status: mockCentralRepositoryStatus,
+    });
+    const pushCentralRepository = vi.fn().mockResolvedValue({
+      output: "Everything up-to-date",
+      status: mockCentralRepositoryStatus,
+    });
+    setupMocks({ pullCentralRepository, pushCentralRepository });
+    renderSettingsView();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pull" }));
+    fireEvent.click(screen.getByRole("button", { name: "Push" }));
+
+    await waitFor(() => {
+      expect(pullCentralRepository).toHaveBeenCalled();
+      expect(pushCentralRepository).toHaveBeenCalled();
+    });
+  });
+
+  it("disables git actions while central repository form has unsaved changes", () => {
+    setupMocks();
+    renderSettingsView();
+
+    fireEvent.change(screen.getByLabelText("本地路径"), {
+      target: { value: "/Users/test/unsaved-skills" },
+    });
+
+    expect(screen.getByRole("button", { name: "Pull" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Push" })).toBeDisabled();
   });
 
   // ── Scan Directories section ──────────────────────────────────────────────

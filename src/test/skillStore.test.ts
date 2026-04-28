@@ -43,6 +43,8 @@ describe("skillStore", () => {
       skillsByAgent: {},
       loadingByAgent: {},
       pendingSkillActionKeys: {},
+      pendingMigrationKeys: {},
+      isBatchMigrating: false,
       error: null,
     });
     vi.clearAllMocks();
@@ -55,6 +57,8 @@ describe("skillStore", () => {
     expect(state.skillsByAgent).toEqual({});
     expect(state.loadingByAgent).toEqual({});
     expect(state.pendingSkillActionKeys).toEqual({});
+    expect(state.pendingMigrationKeys).toEqual({});
+    expect(state.isBatchMigrating).toBe(false);
     expect(state.error).toBeNull();
   });
 
@@ -223,5 +227,106 @@ describe("skillStore", () => {
     expect(
       useSkillStore.getState().pendingSkillActionKeys["claude-code::frontend-design"]
     ).toBeUndefined();
+  });
+
+  // ── migrateSkillToCentral ─────────────────────────────────────────────────
+
+  it("migrates a local agent skill to central and refreshes the agent skill list", async () => {
+    const refreshedSkills: ScannedSkill[] = [
+      {
+        ...mockSkills[1],
+        link_type: "symlink",
+        symlink_target: "~/.agents/skills/code-reviewer",
+        is_central: true,
+      },
+    ];
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({
+        skill_id: "code-reviewer",
+        agent_id: "claude-code",
+        central_path: "~/.agents/skills/code-reviewer",
+        installed_path: "~/.claude/skills/code-reviewer",
+        link_type: "symlink",
+      })
+      .mockResolvedValueOnce(refreshedSkills);
+
+    const result = await useSkillStore
+      .getState()
+      .migrateSkillToCentral("claude-code", "code-reviewer", "row-1");
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "migrate_agent_skill_to_central", {
+      agentId: "claude-code",
+      skillId: "code-reviewer",
+      rowId: "row-1",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_skills_by_agent", {
+      agentId: "claude-code",
+    });
+    expect(result.skill_id).toBe("code-reviewer");
+    expect(useSkillStore.getState().skillsByAgent["claude-code"]).toEqual(refreshedSkills);
+    expect(useSkillStore.getState().pendingMigrationKeys).toEqual({});
+  });
+
+  it("tracks in-flight migrations by agent and skill", async () => {
+    let resolveMigration!: (value: unknown) => void;
+    vi.mocked(invoke)
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveMigration = resolve;
+        })
+      )
+      .mockResolvedValueOnce([]);
+
+    const migrationPromise = useSkillStore
+      .getState()
+      .migrateSkillToCentral("claude-code", "code-reviewer");
+
+    expect(
+      useSkillStore.getState().pendingMigrationKeys["claude-code::code-reviewer"]
+    ).toBe(true);
+
+    resolveMigration({
+      skill_id: "code-reviewer",
+      agent_id: "claude-code",
+      central_path: "~/.agents/skills/code-reviewer",
+      installed_path: "~/.claude/skills/code-reviewer",
+      link_type: "symlink",
+    });
+    await migrationPromise;
+
+    expect(
+      useSkillStore.getState().pendingMigrationKeys["claude-code::code-reviewer"]
+    ).toBeUndefined();
+  });
+
+  it("runs a batch migration and refreshes the agent skill list", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({
+        succeeded: [
+          {
+            skill_id: "code-reviewer",
+            agent_id: "claude-code",
+            central_path: "~/.agents/skills/code-reviewer",
+            installed_path: "~/.claude/skills/code-reviewer",
+            link_type: "symlink",
+          },
+        ],
+        skipped: [],
+        failed: [],
+      })
+      .mockResolvedValueOnce([]);
+
+    const result = await useSkillStore
+      .getState()
+      .batchMigrateAgentSkillsToCentral("claude-code");
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "batch_migrate_agent_skills_to_central", {
+      agentId: "claude-code",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_skills_by_agent", {
+      agentId: "claude-code",
+    });
+    expect(result.succeeded).toHaveLength(1);
+    expect(useSkillStore.getState().isBatchMigrating).toBe(false);
   });
 });

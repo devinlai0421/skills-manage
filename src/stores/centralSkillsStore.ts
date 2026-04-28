@@ -55,6 +55,7 @@ interface CentralSkillsState {
   agents: AgentWithStatus[];
   isLoading: boolean;
   isInstalling: boolean;
+  deletingSkillId: string | null;
   /** Agent ID currently being toggled (null = idle). */
   togglingAgentId: string | null;
   error: string | null;
@@ -67,6 +68,7 @@ interface CentralSkillsState {
     method: string
   ) => Promise<BatchInstallResult>;
   togglePlatformLink: (skillId: string, agentId: string) => Promise<void>;
+  deleteCentralSkill: (skillId: string) => Promise<void>;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -76,6 +78,7 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
   agents: [],
   isLoading: false,
   isInstalling: false,
+  deletingSkillId: null,
   togglingAgentId: null,
   error: null,
 
@@ -149,6 +152,28 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
       set({ skills, togglingAgentId: null });
     } catch (err) {
       set({ error: String(err), togglingAgentId: null });
+      throw err;
+    }
+  },
+
+  deleteCentralSkill: async (skillId) => {
+    if (get().deletingSkillId) {
+      throw new Error("Another central skill deletion is already running");
+    }
+    set({ deletingSkillId: skillId, error: null });
+    if (!isTauriRuntime()) {
+      set((state) => ({
+        skills: state.skills.filter((skill) => skill.id !== skillId),
+        deletingSkillId: null,
+      }));
+      return;
+    }
+    try {
+      await invoke("delete_central_skill", { skillId });
+      const skills = await invoke<SkillWithLinks[]>("get_central_skills");
+      set({ skills, deletingSkillId: null });
+    } catch (err) {
+      set({ error: String(err), deletingSkillId: null });
       throw err;
     }
   },

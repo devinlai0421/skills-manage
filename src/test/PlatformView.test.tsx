@@ -241,6 +241,8 @@ const mockGetSkillsByAgent = vi.fn();
 const mockLoadCentralSkills = vi.fn();
 const mockInstallSkill = vi.fn();
 const mockUninstallSkillFromAgent = vi.fn();
+const mockMigrateSkillToCentral = vi.fn();
+const mockBatchMigrateAgentSkillsToCentral = vi.fn();
 const mockRefreshCounts = vi.fn();
 const mockUsePlatformStore = vi.mocked(usePlatformStore);
 const mockUseSkillStore = vi.mocked(useSkillStore);
@@ -266,9 +268,13 @@ function buildSkillStoreState(overrides = {}) {
     skillsByAgent: { "claude-code": mockSkills },
     loadingByAgent: { "claude-code": false },
     pendingSkillActionKeys: {},
+    pendingMigrationKeys: {},
+    isBatchMigrating: false,
     error: null,
     getSkillsByAgent: mockGetSkillsByAgent,
     uninstallSkillFromAgent: mockUninstallSkillFromAgent,
+    migrateSkillToCentral: mockMigrateSkillToCentral,
+    batchMigrateAgentSkillsToCentral: mockBatchMigrateAgentSkillsToCentral,
     ...overrides,
   };
 }
@@ -326,6 +332,8 @@ describe("PlatformView", () => {
     testNavigate = null;
     mockRefreshCounts.mockReset();
     mockUninstallSkillFromAgent.mockReset();
+    mockMigrateSkillToCentral.mockReset();
+    mockBatchMigrateAgentSkillsToCentral.mockReset();
     installDefaultStoreMocks();
   });
 
@@ -618,6 +626,236 @@ describe("PlatformView", () => {
     expect(
       screen.getByRole("button", { name: /从 Claude Code 卸载 code-reviewer/i })
     ).toBeInTheDocument();
+  });
+
+  it("refreshes the current agent skills from the platform header", async () => {
+    mockRefreshCounts.mockResolvedValue(undefined);
+    mockGetSkillsByAgent.mockResolvedValue(undefined);
+    renderPlatformView();
+
+    fireEvent.click(screen.getByRole("button", { name: /刷新当前 Agent 技能/i }));
+
+    await waitFor(() => {
+      expect(mockRefreshCounts).toHaveBeenCalledTimes(1);
+      expect(mockGetSkillsByAgent).toHaveBeenCalledWith("claude-code");
+    });
+  });
+
+  it("does not label external symlinks as central skills", () => {
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        skillsByAgent: {
+          "claude-code": [
+            {
+              id: "karpathy-guidelines",
+              name: "karpathy-guidelines",
+              description: "Behavioral guidelines",
+              file_path: "~/.claude/skills/karpathy-guidelines/SKILL.md",
+              dir_path: "~/.claude/skills/karpathy-guidelines",
+              link_type: "symlink",
+              symlink_target: "~/.agents/skills/karpathy-guidelines",
+              is_central: false,
+            },
+          ],
+        },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    renderPlatformView();
+
+    const title = screen.getByText("karpathy-guidelines");
+    const card = title.closest(".rounded-xl");
+    expect(card).not.toBeNull();
+    if (!card) return;
+    expect(within(card as HTMLElement).getByText("外部符号链接")).toBeInTheDocument();
+    expect(within(card as HTMLElement).queryByText("中央技能库")).not.toBeInTheDocument();
+  });
+
+  it("shows migration actions only for writable local copy skills", () => {
+    renderPlatformView();
+
+    expect(
+      screen.getByRole("button", { name: /迁移 code-reviewer 到中央技能库/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /迁移 frontend-design 到中央技能库/i })
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show migration actions for central skills installed as copies", () => {
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        skillsByAgent: {
+          "claude-code": [
+            {
+              ...mockSkills[1],
+              is_central: true,
+              link_type: "copy",
+            },
+          ],
+        },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    renderPlatformView();
+
+    expect(
+      screen.queryByRole("button", { name: /迁移 code-reviewer 到中央技能库/i })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /迁移本地技能/i })).toBeDisabled();
+  });
+
+  it("disables card actions while batch migration is running", () => {
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        isBatchMigrating: true,
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    renderPlatformView();
+
+    expect(screen.getByRole("button", { name: /迁移本地技能/i })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /迁移 code-reviewer 到中央技能库/i })
+    ).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: /确认删除/i })[0]).toBeDisabled();
+  });
+
+  it("does not show migration actions for read-only Claude plugin rows", () => {
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        skillsByAgent: { "claude-code": mockDuplicateClaudeSkills },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    renderPlatformView();
+
+    const [userBadge] = getCardBadgeMatches(userSourceText);
+    const [pluginBadge] = getCardBadgeMatches(pluginSourceText);
+    const userCard = userBadge.closest(".rounded-xl");
+    const pluginCard = pluginBadge.closest(".rounded-xl");
+
+    expect(userCard).not.toBeNull();
+    expect(pluginCard).not.toBeNull();
+    if (!userCard || !pluginCard) return;
+
+    expect(
+      within(userCard as HTMLElement).getByRole("button", {
+        name: /迁移 shared-skill 到中央技能库/i,
+      })
+    ).toBeInTheDocument();
+    expect(
+      within(pluginCard as HTMLElement).queryByRole("button", {
+        name: /迁移 shared-skill 到中央技能库/i,
+      })
+    ).not.toBeInTheDocument();
+  });
+
+  it("migrates a single local skill and refreshes related lists", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    mockMigrateSkillToCentral.mockResolvedValue({
+      skill_id: "code-reviewer",
+      agent_id: "claude-code",
+      central_path: "~/.agents/skills/code-reviewer",
+      installed_path: "~/.claude/skills/code-reviewer",
+      link_type: "symlink",
+    });
+
+    renderPlatformView();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /迁移 code-reviewer 到中央技能库/i })
+    );
+
+    await waitFor(() => {
+      expect(mockMigrateSkillToCentral).toHaveBeenCalledWith(
+        "claude-code",
+        "code-reviewer",
+        undefined
+      );
+    });
+    expect(mockLoadCentralSkills).toHaveBeenCalled();
+    expect(mockRefreshCounts).toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("opens a multi-select migration dialog from the platform header", async () => {
+    renderPlatformView();
+
+    fireEvent.click(screen.getByRole("button", { name: /迁移本地技能/i }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("选择要迁移的本地技能")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /code-reviewer/i })).not.toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: /frontend-design/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /迁移已选技能/i })).toBeDisabled();
+  });
+
+  it("includes external symlink skills in the migration selection dialog", async () => {
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        skillsByAgent: {
+          "claude-code": [
+            ...mockSkills,
+            {
+              id: "karpathy-guidelines",
+              name: "karpathy-guidelines",
+              description: "Behavioral guidelines",
+              file_path: "~/.claude/skills/karpathy-guidelines/SKILL.md",
+              dir_path: "~/.claude/skills/karpathy-guidelines",
+              link_type: "symlink",
+              symlink_target: "~/.agents/skills/karpathy-guidelines",
+              is_central: false,
+            },
+          ],
+        },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    renderPlatformView();
+
+    fireEvent.click(screen.getByRole("button", { name: /迁移本地技能/i }));
+
+    expect(
+      await screen.findByRole("checkbox", { name: /karpathy-guidelines/i })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /frontend-design/i })).not.toBeInTheDocument();
+  });
+
+  it("migrates only selected local skills from the selection dialog", async () => {
+    mockMigrateSkillToCentral.mockResolvedValue({
+      skill_id: "code-reviewer",
+      agent_id: "claude-code",
+      central_path: "~/.agents/skills/code-reviewer",
+      installed_path: "~/.claude/skills/code-reviewer",
+      link_type: "symlink",
+    });
+
+    renderPlatformView();
+
+    fireEvent.click(screen.getByRole("button", { name: /迁移本地技能/i }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /code-reviewer/i }));
+    fireEvent.click(screen.getByRole("button", { name: /迁移已选技能/i }));
+
+    await waitFor(() => {
+      expect(mockMigrateSkillToCentral).toHaveBeenCalledWith(
+        "claude-code",
+        "code-reviewer",
+        undefined
+      );
+    });
+    expect(mockBatchMigrateAgentSkillsToCentral).not.toHaveBeenCalled();
+    expect(mockLoadCentralSkills).toHaveBeenCalled();
+    expect(mockRefreshCounts).toHaveBeenCalled();
   });
 
   it("uninstalls a skill from the current platform and refreshes counts", async () => {

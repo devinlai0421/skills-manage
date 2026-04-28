@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ScanDirectory, AgentWithStatus } from "../types";
+import { ScanDirectory, AgentWithStatus, CentralRepositoryConfig, CentralRepositoryStatus } from "../types";
 
 // Mock Tauri core before importing the store
 vi.mock("@tauri-apps/api/core", () => ({
@@ -31,6 +31,21 @@ const mockCustomDir: ScanDirectory = {
 
 const mockScanDirectories: ScanDirectory[] = [mockBuiltinDir, mockCustomDir];
 
+const mockCentralRepositoryConfig: CentralRepositoryConfig = {
+  local_path: "/Users/test/skills",
+  remote_url: "https://example.com/skills.git",
+};
+
+const mockCentralRepositoryStatus: CentralRepositoryStatus = {
+  is_git_repository: true,
+  branch: "main",
+  remote_url: "https://example.com/skills.git",
+  has_changes: true,
+  ahead: 1,
+  behind: 2,
+  last_error: null,
+};
+
 const mockAgent: AgentWithStatus = {
   id: "custom-qclaw",
   display_name: "QClaw",
@@ -53,6 +68,11 @@ describe("settingsStore", () => {
       githubPat: "",
       isLoadingGitHubPat: false,
       isSavingGitHubPat: false,
+      centralRepositoryConfig: null,
+      centralRepositoryStatus: null,
+      isLoadingCentralRepository: false,
+      isSavingCentralRepository: false,
+      isRunningCentralRepositoryGit: false,
     });
     vi.clearAllMocks();
   });
@@ -376,5 +396,82 @@ describe("settingsStore", () => {
     });
     expect(useSettingsStore.getState().githubPat).toBe("");
     expect(useSettingsStore.getState().isSavingGitHubPat).toBe(false);
+  });
+
+  it("loadCentralRepositoryConfig loads config and status", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(mockCentralRepositoryConfig)
+      .mockResolvedValueOnce(mockCentralRepositoryStatus);
+
+    await useSettingsStore.getState().loadCentralRepositoryConfig();
+
+    expect(invoke).toHaveBeenCalledWith("get_central_repository_config");
+    expect(invoke).toHaveBeenCalledWith("get_central_repository_status");
+    expect(useSettingsStore.getState().centralRepositoryConfig).toEqual(mockCentralRepositoryConfig);
+    expect(useSettingsStore.getState().centralRepositoryStatus).toEqual(mockCentralRepositoryStatus);
+    expect(useSettingsStore.getState().isLoadingCentralRepository).toBe(false);
+  });
+
+  it("saveCentralRepositoryConfig persists config and refreshes status", async () => {
+    const updatedConfig = {
+      local_path: "/Users/test/new-skills",
+      remote_url: null,
+    };
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(updatedConfig)
+      .mockResolvedValueOnce({ ...mockCentralRepositoryStatus, remote_url: null });
+
+    await useSettingsStore
+      .getState()
+      .saveCentralRepositoryConfig("/Users/test/new-skills", "");
+
+    expect(invoke).toHaveBeenCalledWith("set_central_repository_config", {
+      localPath: "/Users/test/new-skills",
+      remoteUrl: "",
+    });
+    expect(useSettingsStore.getState().centralRepositoryConfig).toEqual(updatedConfig);
+    expect(useSettingsStore.getState().isSavingCentralRepository).toBe(false);
+  });
+
+  it("initializeCentralRepository runs initialize command and updates status", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      output: "Initialized empty Git repository",
+      status: mockCentralRepositoryStatus,
+    });
+
+    await useSettingsStore
+      .getState()
+      .initializeCentralRepository("/Users/test/skills", "https://example.com/skills.git");
+
+    expect(invoke).toHaveBeenCalledWith("initialize_central_repository", {
+      localPath: "/Users/test/skills",
+      remoteUrl: "https://example.com/skills.git",
+    });
+    expect(useSettingsStore.getState().centralRepositoryStatus).toEqual(mockCentralRepositoryStatus);
+    expect(useSettingsStore.getState().isRunningCentralRepositoryGit).toBe(false);
+  });
+
+  it("pullCentralRepository refreshes status from operation result", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      output: "Already up to date.",
+      status: mockCentralRepositoryStatus,
+    });
+
+    await useSettingsStore.getState().pullCentralRepository();
+
+    expect(invoke).toHaveBeenCalledWith("pull_central_repository");
+    expect(useSettingsStore.getState().centralRepositoryStatus).toEqual(mockCentralRepositoryStatus);
+  });
+
+  it("pushCentralRepository refreshes status from operation result", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      output: "Everything up-to-date",
+      status: mockCentralRepositoryStatus,
+    });
+
+    await useSettingsStore.getState().pushCentralRepository();
+
+    expect(invoke).toHaveBeenCalledWith("push_central_repository");
+    expect(useSettingsStore.getState().centralRepositoryStatus).toEqual(mockCentralRepositoryStatus);
   });
 });

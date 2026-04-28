@@ -1,11 +1,11 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::{Component, Path};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
 use super::github_import;
-use crate::path_utils::central_skills_dir;
 use crate::AppState;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -115,6 +115,30 @@ fn marketplace_skills_from_candidates(
     }
 
     skills
+}
+
+fn marketplace_skill_directory_name(skill_id: &str) -> Result<String, String> {
+    let dir_name = skill_id
+        .rsplit_once("::")
+        .map(|(_, id)| id)
+        .unwrap_or(skill_id)
+        .trim();
+    if dir_name.is_empty() {
+        return Err("Marketplace skill id cannot be empty".to_string());
+    }
+
+    let path = Path::new(dir_name);
+    let mut components = path.components();
+    let is_single_normal_component =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    if !is_single_normal_component {
+        return Err(format!(
+            "Marketplace skill id '{}' cannot be used as a directory name",
+            skill_id
+        ));
+    }
+
+    Ok(dir_name.to_string())
 }
 
 // ─── IPC Commands ────────────────────────────────────────────────────────────
@@ -351,11 +375,12 @@ async fn sync_registry_impl(
     };
 
     // Check which skills are already installed locally
-    let central_dir = central_skills_dir();
+    let central_dir = super::central_repository::central_skills_dir_for_pool(pool).await?;
 
     // Upsert skills into marketplace_skills
     for skill in &skills {
-        let is_installed = central_dir.join(&skill.name).join("SKILL.md").exists();
+        let skill_dir_name = marketplace_skill_directory_name(&skill.id)?;
+        let is_installed = central_dir.join(skill_dir_name).join("SKILL.md").exists();
 
         sqlx::query(
             "INSERT INTO marketplace_skills (id, registry_id, name, description, download_url, is_installed, synced_at, cache_updated_at)
@@ -477,7 +502,7 @@ fn row_to_marketplace_skill(row: &sqlx::sqlite::SqliteRow) -> MarketplaceSkill {
 
 #[derive(sqlx::FromRow)]
 struct MarketplaceSkillRow {
-    name: String,
+    id: String,
     download_url: String,
 }
 
@@ -519,7 +544,9 @@ pub async fn install_marketplace_skill(
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
     // Create directory and write SKILL.md
-    let skill_dir = central_skills_dir().join(&skill.name);
+    let central_dir = super::central_repository::central_skills_dir_for_pool(&state.db).await?;
+    let skill_dir_name = marketplace_skill_directory_name(&skill.id)?;
+    let skill_dir = central_dir.join(skill_dir_name);
     std::fs::create_dir_all(&skill_dir)
         .map_err(|e| format!("Failed to create directory: {}", e))?;
 
@@ -1353,10 +1380,10 @@ mod tests {
     use super::{
         add_registry_impl, cache_skill_explanation, classify_reqwest_error,
         detect_explanation_api_protocol, format_reqwest_error, get_fallback_endpoint,
-        load_cached_skill_explanation, marketplace_skills_from_candidates,
-        registry_has_cached_skills, search_marketplace_skills_impl, sync_registry_impl,
-        ExplanationApiProtocol, ExplanationErrorKind, RegistryCacheMetadata, RegistrySyncStatus,
-        SyncRegistryOptions,
+        load_cached_skill_explanation, marketplace_skill_directory_name,
+        marketplace_skills_from_candidates, registry_has_cached_skills,
+        search_marketplace_skills_impl, sync_registry_impl, ExplanationApiProtocol,
+        ExplanationErrorKind, RegistryCacheMetadata, RegistrySyncStatus, SyncRegistryOptions,
     };
     use crate::commands::github_import::RemoteSkillCandidate;
     use crate::db;
@@ -1369,6 +1396,16 @@ mod tests {
         let pool = db::create_pool(&db_path).await.expect("create pool");
         db::init_database(&pool).await.expect("init db");
         (pool, dir)
+    }
+
+    #[test]
+    fn marketplace_skill_directory_name_rejects_path_components() {
+        assert_eq!(
+            marketplace_skill_directory_name("openai::safe-skill").unwrap(),
+            "safe-skill"
+        );
+        assert!(marketplace_skill_directory_name("openai::../escape").is_err());
+        assert!(marketplace_skill_directory_name("openai::/tmp/escape").is_err());
     }
 
     #[test]

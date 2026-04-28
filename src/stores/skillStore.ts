@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
-import { ScannedSkill } from "@/types";
+import { BatchMigrateAgentSkillsResult, MigrateAgentSkillResult, ScannedSkill } from "@/types";
 
 const BROWSER_FIXTURE_SKILLS_BY_AGENT: Record<string, ScannedSkill[]> = {
   "claude-code": [
@@ -35,11 +35,21 @@ interface SkillState {
   skillsByAgent: Record<string, ScannedSkill[]>;
   loadingByAgent: Record<string, boolean>;
   pendingSkillActionKeys: Record<string, boolean>;
+  pendingMigrationKeys: Record<string, boolean>;
+  isBatchMigrating: boolean;
   error: string | null;
 
   // Actions
   getSkillsByAgent: (agentId: string) => Promise<void>;
   uninstallSkillFromAgent: (skillId: string, agentId: string) => Promise<void>;
+  migrateSkillToCentral: (
+    agentId: string,
+    skillId: string,
+    rowId?: string
+  ) => Promise<MigrateAgentSkillResult>;
+  batchMigrateAgentSkillsToCentral: (
+    agentId: string
+  ) => Promise<BatchMigrateAgentSkillsResult>;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -52,6 +62,8 @@ export const useSkillStore = create<SkillState>((set) => ({
   skillsByAgent: {},
   loadingByAgent: {},
   pendingSkillActionKeys: {},
+  pendingMigrationKeys: {},
+  isBatchMigrating: false,
   error: null,
 
   /**
@@ -134,6 +146,89 @@ export const useSkillStore = create<SkillState>((set) => ({
           pendingSkillActionKeys: next,
         };
       });
+      throw err;
+    }
+  },
+
+  migrateSkillToCentral: async (agentId: string, skillId: string, rowId?: string) => {
+    const actionKey = skillActionKey(agentId, skillId);
+    set((state) => ({
+      pendingMigrationKeys: {
+        ...state.pendingMigrationKeys,
+        [actionKey]: true,
+      },
+      error: null,
+    }));
+
+    if (!isTauriRuntime()) {
+      set((state) => {
+        const next = { ...state.pendingMigrationKeys };
+        delete next[actionKey];
+        return {
+          pendingMigrationKeys: next,
+          error: "Migrating skills requires the Tauri desktop runtime.",
+        };
+      });
+      throw new Error("Migrating skills requires the Tauri desktop runtime.");
+    }
+
+    try {
+      const result = await invoke<MigrateAgentSkillResult>("migrate_agent_skill_to_central", {
+        agentId,
+        skillId,
+        rowId,
+      });
+      const skills = await invoke<ScannedSkill[]>("get_skills_by_agent", {
+        agentId,
+      });
+
+      set((state) => {
+        const next = { ...state.pendingMigrationKeys };
+        delete next[actionKey];
+        return {
+          skillsByAgent: { ...state.skillsByAgent, [agentId]: skills },
+          pendingMigrationKeys: next,
+        };
+      });
+
+      return result;
+    } catch (err) {
+      set((state) => {
+        const next = { ...state.pendingMigrationKeys };
+        delete next[actionKey];
+        return {
+          error: String(err),
+          pendingMigrationKeys: next,
+        };
+      });
+      throw err;
+    }
+  },
+
+  batchMigrateAgentSkillsToCentral: async (agentId: string) => {
+    set({ isBatchMigrating: true, error: null });
+
+    if (!isTauriRuntime()) {
+      const error = "Migrating skills requires the Tauri desktop runtime.";
+      set({ isBatchMigrating: false, error });
+      throw new Error(error);
+    }
+
+    try {
+      const result = await invoke<BatchMigrateAgentSkillsResult>(
+        "batch_migrate_agent_skills_to_central",
+        { agentId }
+      );
+      const skills = await invoke<ScannedSkill[]>("get_skills_by_agent", {
+        agentId,
+      });
+      set((state) => ({
+        skillsByAgent: { ...state.skillsByAgent, [agentId]: skills },
+        isBatchMigrating: false,
+      }));
+      return result;
+    } catch (err) {
+      set({ error: String(err), isBatchMigrating: false });
       throw err;
     }
   },

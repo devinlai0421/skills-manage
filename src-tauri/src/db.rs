@@ -4,7 +4,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
     FromRow, Row, SqlitePool,
 };
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, path::PathBuf, str::FromStr};
 use uuid::Uuid;
 
 use crate::path_utils::{path_to_string, resolve_home_dir};
@@ -434,7 +434,10 @@ async fn seed_builtin_agents(pool: &DbPool) -> Result<(), String> {
              ON CONFLICT(id) DO UPDATE SET
               display_name = excluded.display_name,
               category = excluded.category,
-              global_skills_dir = excluded.global_skills_dir,
+              global_skills_dir = CASE
+                WHEN agents.id = 'central' THEN agents.global_skills_dir
+                ELSE excluded.global_skills_dir
+              END,
               project_skills_dir = excluded.project_skills_dir,
               icon_name = excluded.icon_name",
         )
@@ -491,10 +494,13 @@ async fn seed_builtin_scan_directories(pool: &DbPool) -> Result<(), String> {
     }
 
     // Remove builtin scan directories that no longer exist in code
-    let builtin_paths: std::collections::HashSet<String> = builtin_agents()
+    let mut builtin_paths: std::collections::HashSet<String> = builtin_agents()
         .into_iter()
         .map(|a| a.global_skills_dir)
         .collect();
+    if let Some(central_agent) = get_agent_by_id(pool, "central").await? {
+        builtin_paths.insert(central_agent.global_skills_dir);
+    }
     let all_db_dirs: Vec<(String,)> =
         sqlx::query_as("SELECT path FROM scan_directories WHERE is_builtin = 1")
             .fetch_all(pool)
@@ -990,7 +996,42 @@ pub struct SkillForAgent {
     pub conflict_count: i64,
 }
 
-fn observation_to_skill_for_agent(observation: AgentSkillObservation) -> SkillForAgent {
+fn resolve_observation_symlink_target(observation: &AgentSkillObservation) -> Option<PathBuf> {
+    let target = PathBuf::from(observation.symlink_target.as_ref()?);
+    if target.is_absolute() {
+        return Some(target);
+    }
+    Some(PathBuf::from(&observation.dir_path).parent()?.join(target))
+}
+
+fn paths_point_to_same_location(left: &PathBuf, right: &PathBuf) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn observation_is_current_central_link(
+    observation: &AgentSkillObservation,
+    central_paths_by_id: &HashMap<String, String>,
+) -> bool {
+    if observation.source_kind != "user" || observation.link_type != "symlink" {
+        return false;
+    }
+
+    let Some(canonical_path) = central_paths_by_id.get(&observation.skill_id) else {
+        return false;
+    };
+    let Some(target_path) = resolve_observation_symlink_target(observation) else {
+        return false;
+    };
+    paths_point_to_same_location(&target_path, &PathBuf::from(canonical_path))
+}
+
+fn observation_to_skill_for_agent(
+    observation: AgentSkillObservation,
+    is_central: bool,
+) -> SkillForAgent {
     SkillForAgent {
         id: observation.skill_id,
         row_id: observation.row_id,
@@ -1000,7 +1041,7 @@ fn observation_to_skill_for_agent(observation: AgentSkillObservation) -> SkillFo
         dir_path: observation.dir_path,
         link_type: observation.link_type,
         symlink_target: observation.symlink_target,
-        is_central: false,
+        is_central,
         source_kind: Some(observation.source_kind),
         source_root: Some(observation.source_root),
         is_read_only: observation.is_read_only,
@@ -1023,6 +1064,19 @@ pub async fn get_skills_for_agent(
     if agent_id == "claude-code" {
         let observations = get_agent_skill_observations(pool, agent_id).await?;
         if !observations.is_empty() {
+            let central_rows =
+                sqlx::query("SELECT id, canonical_path FROM skills WHERE is_central = 1")
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            let central_paths_by_id: HashMap<String, String> = central_rows
+                .into_iter()
+                .filter_map(|row| {
+                    let id: String = row.get("id");
+                    let canonical_path: Option<String> = row.get("canonical_path");
+                    canonical_path.map(|path| (id, path))
+                })
+                .collect();
             let mut conflict_counts: HashMap<String, i64> = HashMap::new();
             for observation in &observations {
                 *conflict_counts
@@ -1037,7 +1091,9 @@ pub async fn get_skills_for_agent(
                         .get(&observation.skill_id)
                         .copied()
                         .unwrap_or(0);
-                    let mut skill = observation_to_skill_for_agent(observation);
+                    let is_central =
+                        observation_is_current_central_link(&observation, &central_paths_by_id);
+                    let mut skill = observation_to_skill_for_agent(observation, is_central);
                     if conflict_count > 1 {
                         skill.conflict_group = Some(claude_conflict_group(agent_id, &skill.id));
                         skill.conflict_count = conflict_count;
@@ -1324,6 +1380,45 @@ pub async fn delete_skills_not_in_scope(
         q2 = q2.bind(id.as_str());
     }
     q2.execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Clear stale central flags for skills that were not found in the current
+/// central directory scan. The skill rows may still be valid platform/custom
+/// skills, but they should no longer appear in the Central Skills view.
+pub async fn clear_stale_central_flags(
+    pool: &DbPool,
+    central_skill_ids: &[String],
+) -> Result<(), String> {
+    if central_skill_ids.is_empty() {
+        return sqlx::query(
+            "UPDATE skills SET is_central = 0, canonical_path = NULL WHERE is_central = 1",
+        )
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string());
+    }
+
+    let placeholders = central_skill_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "UPDATE skills SET is_central = 0, canonical_path = NULL
+         WHERE is_central = 1 AND id NOT IN ({})",
+        placeholders
+    );
+    let mut query = sqlx::query(&sql);
+    for id in central_skill_ids {
+        query = query.bind(id.as_str());
+    }
+
+    query
+        .execute(pool)
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())

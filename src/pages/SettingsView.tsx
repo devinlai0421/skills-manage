@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight, KeyRound } from "lucide-react";
+import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight, KeyRound, GitBranch, Download, Upload, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -181,6 +181,17 @@ export function SettingsView() {
   const loadGitHubPat = useSettingsStore((s) => s.loadGitHubPat);
   const saveGitHubPat = useSettingsStore((s) => s.saveGitHubPat);
   const clearGitHubPat = useSettingsStore((s) => s.clearGitHubPat);
+  const centralRepositoryConfig = useSettingsStore((s) => s.centralRepositoryConfig);
+  const centralRepositoryStatus = useSettingsStore((s) => s.centralRepositoryStatus);
+  const isLoadingCentralRepository = useSettingsStore((s) => s.isLoadingCentralRepository);
+  const isSavingCentralRepository = useSettingsStore((s) => s.isSavingCentralRepository);
+  const isRunningCentralRepositoryGit = useSettingsStore((s) => s.isRunningCentralRepositoryGit);
+  const loadCentralRepositoryConfig = useSettingsStore((s) => s.loadCentralRepositoryConfig);
+  const refreshCentralRepositoryStatus = useSettingsStore((s) => s.refreshCentralRepositoryStatus);
+  const saveCentralRepositoryConfig = useSettingsStore((s) => s.saveCentralRepositoryConfig);
+  const initializeCentralRepository = useSettingsStore((s) => s.initializeCentralRepository);
+  const pullCentralRepository = useSettingsStore((s) => s.pullCentralRepository);
+  const pushCentralRepository = useSettingsStore((s) => s.pushCentralRepository);
 
   const agents = usePlatformStore((s) => s.agents);
 
@@ -288,19 +299,35 @@ export function SettingsView() {
   const [platformError, setPlatformError] = useState<string | null>(null);
   const [githubPatInput, setGitHubPatInput] = useState("");
   const [githubPatMessage, setGitHubPatMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [centralPathInput, setCentralPathInput] = useState("");
+  const [centralRemoteInput, setCentralRemoteInput] = useState("");
+  const [centralRepositoryMessage, setCentralRepositoryMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // ── Load on mount ──────────────────────────────────────────────────────────
 
   useEffect(() => {
     loadScanDirectories();
     loadGitHubPat();
-  }, [loadScanDirectories, loadGitHubPat]);
+    loadCentralRepositoryConfig();
+  }, [loadScanDirectories, loadGitHubPat, loadCentralRepositoryConfig]);
 
   useEffect(() => {
     setGitHubPatInput(githubPat);
   }, [githubPat]);
 
+  useEffect(() => {
+    if (!centralRepositoryConfig) return;
+    setCentralPathInput(centralRepositoryConfig.local_path);
+    setCentralRemoteInput(centralRepositoryConfig.remote_url ?? "");
+  }, [centralRepositoryConfig]);
+
   const isGitHubPatDirty = useMemo(() => githubPatInput.trim() !== githubPat, [githubPatInput, githubPat]);
+  const isCentralRepositoryDirty = useMemo(
+    () =>
+      centralPathInput.trim() !== (centralRepositoryConfig?.local_path ?? "") ||
+      centralRemoteInput.trim() !== (centralRepositoryConfig?.remote_url ?? ""),
+    [centralPathInput, centralRemoteInput, centralRepositoryConfig]
+  );
 
   // ── Scan Directories Handlers ──────────────────────────────────────────────
 
@@ -448,6 +475,62 @@ export function SettingsView() {
     }
   }
 
+  async function handleSaveCentralRepository() {
+    setCentralRepositoryMessage(null);
+    try {
+      await saveCentralRepositoryConfig(centralPathInput, centralRemoteInput);
+      setCentralRepositoryMessage({
+        type: "success",
+        text: t("settings.centralRepositorySaved"),
+      });
+      await rescan();
+      toast.success(t("settings.centralRepositorySaved"));
+    } catch (err) {
+      const text = String(err);
+      setCentralRepositoryMessage({ type: "error", text });
+      toast.error(text);
+    }
+  }
+
+  async function handleInitializeCentralRepository() {
+    setCentralRepositoryMessage(null);
+    try {
+      await initializeCentralRepository(centralPathInput, centralRemoteInput);
+      setCentralRepositoryMessage({
+        type: "success",
+        text: t("settings.centralRepositoryInitialized"),
+      });
+      await rescan();
+      toast.success(t("settings.centralRepositoryInitialized"));
+    } catch (err) {
+      const text = String(err);
+      setCentralRepositoryMessage({ type: "error", text });
+      toast.error(text);
+    }
+  }
+
+  async function handleCentralRepositoryGitAction(action: "pull" | "push" | "refresh") {
+    setCentralRepositoryMessage(null);
+    try {
+      if (action === "pull") {
+        await pullCentralRepository();
+      } else if (action === "push") {
+        await pushCentralRepository();
+      } else {
+        await refreshCentralRepositoryStatus();
+      }
+      setCentralRepositoryMessage({
+        type: "success",
+        text: t("settings.centralRepositoryActionSuccess"),
+      });
+      toast.success(t("settings.centralRepositoryActionSuccess"));
+    } catch (err) {
+      const text = String(err);
+      setCentralRepositoryMessage({ type: "error", text });
+      toast.error(text);
+    }
+  }
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -509,7 +592,144 @@ export function SettingsView() {
           </CardContent>
         </Card>
 
-        {/* ── Section 2: GitHub Import Auth ─────────────────────────────── */}
+        {/* ── Section 2: Central Repository ─────────────────────────────── */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <GitBranch className="size-5 text-muted-foreground" />
+              <div>
+                <CardTitle>{t("settings.centralRepository")}</CardTitle>
+                <CardDescription className="mt-1">
+                  {t("settings.centralRepositoryDesc")}
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <div>
+                  <label htmlFor="central-repository-path" className="mb-1 block text-xs text-muted-foreground">
+                    {t("settings.centralRepositoryLocalPath")}
+                  </label>
+                  <Input
+                    id="central-repository-path"
+                    value={centralPathInput}
+                    onChange={(event) => setCentralPathInput(event.target.value)}
+                    disabled={isLoadingCentralRepository || isSavingCentralRepository || isRunningCentralRepositoryGit}
+                    placeholder="~/.agents/skills"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="central-repository-remote-url" className="mb-1 block text-xs text-muted-foreground">
+                    {t("settings.centralRepositoryRemoteUrl")}
+                  </label>
+                  <Input
+                    id="central-repository-remote-url"
+                    value={centralRemoteInput}
+                    onChange={(event) => setCentralRemoteInput(event.target.value)}
+                    disabled={isLoadingCentralRepository || isSavingCentralRepository || isRunningCentralRepositoryGit}
+                    placeholder="git@github.com:owner/skills.git"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-3 text-sm">
+                {isLoadingCentralRepository ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin" />
+                    <span>{t("settings.loading")}</span>
+                  </div>
+                ) : centralRepositoryStatus ? (
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    <span className="rounded-md bg-background px-2 py-1 text-muted-foreground">
+                      {centralRepositoryStatus.is_git_repository
+                        ? t("settings.centralRepositoryGitRepo")
+                        : t("settings.centralRepositoryNotGitRepo")}
+                    </span>
+                    {centralRepositoryStatus.branch ? (
+                      <span className="rounded-md bg-background px-2 py-1 font-mono">
+                        {centralRepositoryStatus.branch}
+                      </span>
+                    ) : null}
+                    <span className="rounded-md bg-background px-2 py-1 text-muted-foreground">
+                      {centralRepositoryStatus.has_changes
+                        ? t("settings.centralRepositoryHasChanges")
+                        : t("settings.centralRepositoryClean")}
+                    </span>
+                    <span className="rounded-md bg-background px-2 py-1 text-muted-foreground">
+                      {t("settings.centralRepositoryAheadBehind", {
+                        ahead: centralRepositoryStatus.ahead,
+                        behind: centralRepositoryStatus.behind,
+                      })}
+                    </span>
+                    {centralRepositoryStatus.last_error ? (
+                      <span className="rounded-md bg-destructive/10 px-2 py-1 text-destructive">
+                        {centralRepositoryStatus.last_error}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">{t("settings.centralRepositoryNoStatus")}</p>
+                )}
+              </div>
+
+              {centralRepositoryMessage ? (
+                <p
+                  className={centralRepositoryMessage.type === "error" ? "text-sm text-destructive" : "text-sm text-emerald-600 dark:text-emerald-400"}
+                  role="status"
+                >
+                  {centralRepositoryMessage.text}
+                </p>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  onClick={handleSaveCentralRepository}
+                  disabled={isLoadingCentralRepository || isSavingCentralRepository || isRunningCentralRepositoryGit || !isCentralRepositoryDirty || !centralPathInput.trim()}
+                  aria-label={t("settings.centralRepositorySave")}
+                >
+                  {isSavingCentralRepository ? <Loader2 className="size-4 animate-spin" /> : null}
+                  <span>{t("settings.centralRepositorySave")}</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleInitializeCentralRepository}
+                  disabled={isLoadingCentralRepository || isSavingCentralRepository || isRunningCentralRepositoryGit || !centralPathInput.trim()}
+                >
+                  {isRunningCentralRepositoryGit ? <Loader2 className="size-4 animate-spin" /> : <GitBranch className="size-4" />}
+                  <span>{t("settings.centralRepositoryInitialize")}</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => handleCentralRepositoryGitAction("pull")}
+                  disabled={isCentralRepositoryDirty || isRunningCentralRepositoryGit || !centralRepositoryStatus?.is_git_repository}
+                >
+                  <Download className="size-4" />
+                  <span>{t("settings.centralRepositoryPull")}</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => handleCentralRepositoryGitAction("push")}
+                  disabled={isCentralRepositoryDirty || isRunningCentralRepositoryGit || !centralRepositoryStatus?.is_git_repository}
+                >
+                  <Upload className="size-4" />
+                  <span>{t("settings.centralRepositoryPush")}</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => handleCentralRepositoryGitAction("refresh")}
+                  disabled={isCentralRepositoryDirty || isRunningCentralRepositoryGit}
+                >
+                  <RefreshCw className="size-4" />
+                  <span>{t("common.refresh")}</span>
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* ── Section 3: GitHub Import Auth ─────────────────────────────── */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">

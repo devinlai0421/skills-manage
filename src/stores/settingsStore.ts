@@ -1,6 +1,14 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { ScanDirectory, AgentWithStatus, CustomAgentConfig, UpdateCustomAgentConfig } from "@/types";
+import {
+  AgentWithStatus,
+  CentralRepositoryConfig,
+  CentralRepositoryOperationResult,
+  CentralRepositoryStatus,
+  CustomAgentConfig,
+  ScanDirectory,
+  UpdateCustomAgentConfig,
+} from "@/types";
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -11,6 +19,11 @@ interface SettingsState {
   githubPat: string;
   isLoadingGitHubPat: boolean;
   isSavingGitHubPat: boolean;
+  centralRepositoryConfig: CentralRepositoryConfig | null;
+  centralRepositoryStatus: CentralRepositoryStatus | null;
+  isLoadingCentralRepository: boolean;
+  isSavingCentralRepository: boolean;
+  isRunningCentralRepositoryGit: boolean;
 
   // Actions — scan directories
   loadScanDirectories: () => Promise<void>;
@@ -22,6 +35,14 @@ interface SettingsState {
   loadGitHubPat: () => Promise<void>;
   saveGitHubPat: (value: string) => Promise<void>;
   clearGitHubPat: () => Promise<void>;
+
+  // Actions — central repository
+  loadCentralRepositoryConfig: () => Promise<void>;
+  refreshCentralRepositoryStatus: () => Promise<void>;
+  saveCentralRepositoryConfig: (localPath: string, remoteUrl: string) => Promise<CentralRepositoryConfig>;
+  initializeCentralRepository: (localPath: string, remoteUrl: string) => Promise<CentralRepositoryOperationResult>;
+  pullCentralRepository: () => Promise<CentralRepositoryOperationResult>;
+  pushCentralRepository: () => Promise<CentralRepositoryOperationResult>;
 
   // Actions — custom agents
   addCustomAgent: (config: CustomAgentConfig) => Promise<AgentWithStatus>;
@@ -40,6 +61,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   githubPat: "",
   isLoadingGitHubPat: false,
   isSavingGitHubPat: false,
+  centralRepositoryConfig: null,
+  centralRepositoryStatus: null,
+  isLoadingCentralRepository: false,
+  isSavingCentralRepository: false,
+  isRunningCentralRepositoryGit: false,
 
   // ── Scan Directories ───────────────────────────────────────────────────────
 
@@ -142,6 +168,120 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       set({
         error: String(err),
         isSavingGitHubPat: false,
+      });
+      throw err;
+    }
+  },
+
+  // ── Central Repository ─────────────────────────────────────────────────────
+
+  loadCentralRepositoryConfig: async () => {
+    set({ isLoadingCentralRepository: true, error: null });
+    try {
+      const config = await invoke<CentralRepositoryConfig>("get_central_repository_config");
+      const status = await invoke<CentralRepositoryStatus>("get_central_repository_status");
+      set({
+        centralRepositoryConfig: config,
+        centralRepositoryStatus: status,
+        isLoadingCentralRepository: false,
+      });
+    } catch (err) {
+      set({
+        error: String(err),
+        isLoadingCentralRepository: false,
+      });
+    }
+  },
+
+  refreshCentralRepositoryStatus: async () => {
+    try {
+      const status = await invoke<CentralRepositoryStatus>("get_central_repository_status");
+      set({ centralRepositoryStatus: status });
+    } catch (err) {
+      set({ error: String(err) });
+      throw err;
+    }
+  },
+
+  saveCentralRepositoryConfig: async (localPath: string, remoteUrl: string) => {
+    set({ isSavingCentralRepository: true, error: null });
+    try {
+      const config = await invoke<CentralRepositoryConfig>("set_central_repository_config", {
+        localPath,
+        remoteUrl,
+      });
+      const status = await invoke<CentralRepositoryStatus>("get_central_repository_status");
+      set({
+        centralRepositoryConfig: config,
+        centralRepositoryStatus: status,
+        isSavingCentralRepository: false,
+      });
+      return config;
+    } catch (err) {
+      set({
+        error: String(err),
+        isSavingCentralRepository: false,
+      });
+      throw err;
+    }
+  },
+
+  initializeCentralRepository: async (localPath: string, remoteUrl: string) => {
+    set({ isRunningCentralRepositoryGit: true, error: null });
+    try {
+      const result = await invoke<CentralRepositoryOperationResult>("initialize_central_repository", {
+        localPath,
+        remoteUrl,
+      });
+      set({
+        centralRepositoryConfig: {
+          local_path: localPath,
+          remote_url: remoteUrl.trim() || null,
+        },
+        centralRepositoryStatus: result.status,
+        isRunningCentralRepositoryGit: false,
+      });
+      return result;
+    } catch (err) {
+      set({
+        error: String(err),
+        isRunningCentralRepositoryGit: false,
+      });
+      throw err;
+    }
+  },
+
+  pullCentralRepository: async () => {
+    set({ isRunningCentralRepositoryGit: true, error: null });
+    try {
+      const result = await invoke<CentralRepositoryOperationResult>("pull_central_repository");
+      set({
+        centralRepositoryStatus: result.status,
+        isRunningCentralRepositoryGit: false,
+      });
+      return result;
+    } catch (err) {
+      set({
+        error: String(err),
+        isRunningCentralRepositoryGit: false,
+      });
+      throw err;
+    }
+  },
+
+  pushCentralRepository: async () => {
+    set({ isRunningCentralRepositoryGit: true, error: null });
+    try {
+      const result = await invoke<CentralRepositoryOperationResult>("push_central_repository");
+      set({
+        centralRepositoryStatus: result.status,
+        isRunningCentralRepositoryGit: false,
+      });
+      return result;
+    } catch (err) {
+      set({
+        error: String(err),
+        isRunningCentralRepositoryGit: false,
       });
       throw err;
     }

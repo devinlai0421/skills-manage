@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod central_repository;
 pub mod collections;
 pub mod discover;
 pub mod github_import;

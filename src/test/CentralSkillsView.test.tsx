@@ -116,6 +116,7 @@ const mockSkills: SkillWithLinks[] = [
 const mockLoadCentralSkills = vi.fn();
 const mockInstallSkill = vi.fn();
 const mockTogglePlatformLink = vi.fn();
+const mockDeleteCentralSkill = vi.fn();
 const mockRescan = vi.fn();
 const mockGetSkillsByAgent = vi.fn();
 const mockPreviewGitHubRepoImport = vi.fn();
@@ -132,11 +133,13 @@ function buildCentralStoreState(overrides = {}) {
     agents: mockAgents,
     isLoading: false,
     isInstalling: false,
+    deletingSkillId: null,
     togglingAgentId: null,
     error: null,
     loadCentralSkills: mockLoadCentralSkills,
     installSkill: mockInstallSkill,
     togglePlatformLink: mockTogglePlatformLink,
+    deleteCentralSkill: mockDeleteCentralSkill,
     ...overrides,
   };
 }
@@ -165,19 +168,26 @@ function buildSkillStoreState(overrides = {}) {
   };
 }
 
-function renderCentralSkillsView() {
+interface RenderCentralSkillsViewOptions {
+  centralState?: Record<string, unknown>;
+  platformState?: Record<string, unknown>;
+  skillState?: Record<string, unknown>;
+  marketplaceState?: Record<string, unknown>;
+}
+
+function renderCentralSkillsView(options: RenderCentralSkillsViewOptions = {}) {
   mockUseCentralSkillsStore.mockImplementation((selector?: unknown) => {
-    const state = buildCentralStoreState();
+    const state = buildCentralStoreState(options.centralState);
     if (typeof selector === "function") return selector(state);
     return state;
   });
   mockUsePlatformStore.mockImplementation((selector?: unknown) => {
-    const state = buildPlatformStoreState();
+    const state = buildPlatformStoreState(options.platformState);
     if (typeof selector === "function") return selector(state);
     return state;
   });
   mockUseSkillStore.mockImplementation((selector?: unknown) => {
-    const state = buildSkillStoreState();
+    const state = buildSkillStoreState(options.skillState);
     if (typeof selector === "function") return selector(state);
     return state;
   });
@@ -194,6 +204,7 @@ function renderCentralSkillsView() {
       previewGitHubRepoImport: mockPreviewGitHubRepoImport,
       importGitHubRepoSkills: mockImportGitHubRepoSkills,
       resetGitHubImport: mockResetGitHubImport,
+      ...options.marketplaceState,
     };
     if (typeof selector === "function") return selector(state);
     return state;
@@ -211,6 +222,7 @@ function renderCentralSkillsView() {
 describe("CentralSkillsView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDeleteCentralSkill.mockReset();
   });
 
   // ── Header ────────────────────────────────────────────────────────────────
@@ -223,6 +235,90 @@ describe("CentralSkillsView", () => {
   it("shows the central skills directory path", () => {
     renderCentralSkillsView();
     expect(screen.getByText("/Users/test/.agents/skills/")).toBeInTheDocument();
+  });
+
+  it("uses the configured central skills directory in the empty state", () => {
+    const configuredAgents = mockAgents.map((agent) =>
+      agent.id === "central"
+        ? {
+            ...agent,
+            global_skills_dir: "/Users/devinlai/Documents/UGit/AgentSkills",
+          }
+        : agent
+    );
+
+    renderCentralSkillsView({
+      centralState: {
+        skills: [],
+        agents: configuredAgents,
+      },
+      platformState: {
+        agents: configuredAgents,
+      },
+    });
+
+    expect(
+      screen.getByText(/在 \/Users\/devinlai\/Documents\/UGit\/AgentSkills 中未找到任何技能/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("/Users/devinlai/Documents/UGit/AgentSkills/my-skill/SKILL.md")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("/Users/devinlai/Documents/UGit/AgentSkills/my-skill/SKILL.md")
+    ).toHaveClass("break-all");
+    expect(screen.queryByText(/~\/\.agents\/skills/)).not.toBeInTheDocument();
+  });
+
+  it("normalizes the empty-state example path when the central directory has trailing separators", () => {
+    const configuredAgents = mockAgents.map((agent) =>
+      agent.id === "central"
+        ? {
+            ...agent,
+            global_skills_dir: "/Users/devinlai/Documents/UGit/AgentSkills//",
+          }
+        : agent
+    );
+
+    renderCentralSkillsView({
+      centralState: {
+        skills: [],
+        agents: configuredAgents,
+      },
+      platformState: {
+        agents: configuredAgents,
+      },
+    });
+
+    expect(
+      screen.getByText("/Users/devinlai/Documents/UGit/AgentSkills/my-skill/SKILL.md")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("/Users/devinlai/Documents/UGit/AgentSkills//my-skill/SKILL.md")
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps Windows-style separators in the empty-state example path", () => {
+    const configuredAgents = mockAgents.map((agent) =>
+      agent.id === "central"
+        ? {
+            ...agent,
+            global_skills_dir: "C:/Users/devin/AgentSkills/",
+          }
+        : agent
+    );
+
+    renderCentralSkillsView({
+      centralState: {
+        skills: [],
+        agents: configuredAgents,
+      },
+      platformState: {
+        agents: configuredAgents,
+      },
+    });
+
+    expect(screen.getByText("C:\\Users\\devin\\AgentSkills\\my-skill\\SKILL.md")).toBeInTheDocument();
+    expect(screen.queryByText("C:\\Users\\devin\\AgentSkills/my-skill/SKILL.md")).not.toBeInTheDocument();
   });
 
   it("shows a refresh button", () => {
@@ -302,6 +398,43 @@ describe("CentralSkillsView", () => {
       name: /将 .* 安装到平台/i,
     });
     expect(installButtons).toHaveLength(2);
+  });
+
+  it("deletes a central skill after inline confirmation and refreshes counts", async () => {
+    mockDeleteCentralSkill.mockResolvedValue(undefined);
+    mockRescan.mockResolvedValue(undefined);
+    renderCentralSkillsView();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /删除中央技能 frontend-design/i })
+    );
+    expect(mockDeleteCentralSkill).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /确认删除/i }));
+
+    await waitFor(() => {
+      expect(mockDeleteCentralSkill).toHaveBeenCalledWith("frontend-design");
+      expect(mockRescan).toHaveBeenCalled();
+    });
+  });
+
+  it("disables platform toggle icons while deleting that central skill", () => {
+    renderCentralSkillsView({
+      centralState: {
+        deletingSkillId: "frontend-design",
+      },
+    });
+
+    expect(
+      screen.getByRole("button", {
+        name: /切换 frontend-design 在 Claude Code 的链接状态/i,
+      })
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", {
+        name: /切换 code-reviewer 在 Claude Code 的链接状态/i,
+      })
+    ).toBeDisabled();
   });
 
   it("renders browser fixture skill card on the localhost validation surface without Tauri", async () => {

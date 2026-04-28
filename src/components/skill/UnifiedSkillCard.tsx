@@ -27,12 +27,14 @@ function PlatformToggleIcon({
   skillName,
   isLinked,
   isToggling,
+  isDisabled = false,
   onToggle,
 }: {
   agent: AgentWithStatus;
   skillName: string;
   isLinked: boolean;
   isToggling: boolean;
+  isDisabled?: boolean;
   onToggle: () => void;
 }) {
   const { t } = useTranslation();
@@ -47,7 +49,7 @@ function PlatformToggleIcon({
       )}
       title={agent.display_name}
       aria-label={t("central.toggleInstallLabel", { platform: agent.display_name, skill: skillName })}
-      disabled={isToggling}
+      disabled={isToggling || isDisabled}
       onClick={onToggle}
     >
       <PlatformIcon agentId={agent.id} className="size-4 shrink-0" size={16} />
@@ -95,11 +97,13 @@ export interface UnifiedSkillCardProps {
   onDetail?: MouseEventHandler<HTMLButtonElement>;
   onInstallTo?: () => void;
   onInstallToCentral?: () => void;
+  onMigrateToCentral?: () => void;
   onInstallToPlatform?: () => void;
   onUninstallFromPlatform?: () => void;
   uninstallFromLabel?: string;
   onInstall?: () => void;
   onRemove?: () => void;
+  removeLabel?: string;
   isLoading?: boolean;
   detailButtonRef?: Ref<HTMLButtonElement>;
 }
@@ -127,11 +131,13 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onDetail,
     onInstallTo,
     onInstallToCentral,
+    onMigrateToCentral,
     onInstallToPlatform,
     onUninstallFromPlatform,
     uninstallFromLabel,
     onInstall,
     onRemove,
+    removeLabel,
     isLoading,
     detailButtonRef,
   } = props;
@@ -143,6 +149,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onDetail ||
     onInstallTo ||
     onInstallToCentral ||
+    onMigrateToCentral ||
     onInstallToPlatform ||
     onUninstallFromPlatform ||
     onInstall ||
@@ -172,7 +179,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
               {description && (
                 <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">{description}</p>
               )}
-              {sourceType && <SourceIndicator sourceType={sourceType} />}
+              {sourceType && <SourceIndicator sourceType={sourceType} isCentral={isCentral} />}
             </div>
             <ChevronRight className="size-4 text-muted-foreground shrink-0 mt-0.5" />
           </div>
@@ -250,6 +257,18 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   </button>
                 )}
 
+                {onMigrateToCentral && (
+                  <button
+                    onClick={onMigrateToCentral}
+                    disabled={isLoading}
+                    title={t("platform.migrateToCentral")}
+                    aria-label={t("platform.migrateToCentralLabel", { name })}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:opacity-50 disabled:cursor-default"
+                  >
+                    {isLoading ? <Loader2 className="size-4 animate-spin" /> : <ArrowUpRight className="size-4" />}
+                  </button>
+                )}
+
                 {/* Install to Platform (discover) */}
                 {onInstallToPlatform && (
                   <button
@@ -291,8 +310,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   <InlineConfirmAction
                     onConfirm={onRemove}
                     isLoading={isLoading}
-                    idleTitle={t("collection.removeSkillLabel", { name })}
-                    idleAriaLabel={t("collection.removeSkillLabel", { name })}
+                    idleTitle={removeLabel ?? t("collection.removeSkillLabel", { name })}
+                    idleAriaLabel={removeLabel ?? t("collection.removeSkillLabel", { name })}
                     confirmLabel={t("common.confirmDelete")}
                     icon={<X className="size-4" />}
                   />
@@ -312,7 +331,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
             {isReadOnly && <ReadOnlyBadge />}
 
             {/* Source indicator (platform) */}
-            {sourceType && <SourceIndicator sourceType={sourceType} />}
+            {sourceType && <SourceIndicator sourceType={sourceType} isCentral={isCentral} />}
 
             {/* "Already in Central" badge */}
             {isCentral && (
@@ -371,6 +390,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                         skillName={name}
                         isLinked={platformIcons.linkedAgents.includes(agent.id)}
                         isToggling={platformIcons.togglingAgentId === agent.id}
+                        isDisabled={isLoading}
                         onToggle={() => platformIcons.onToggle(platformIcons.skillId, agent.id)}
                       />
                     ))}
@@ -390,6 +410,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                         skillName={name}
                         isLinked={platformIcons.linkedAgents.includes(agent.id)}
                         isToggling={platformIcons.togglingAgentId === agent.id}
+                        isDisabled={isLoading}
                         onToggle={() => platformIcons.onToggle(platformIcons.skillId, agent.id)}
                       />
                     ))}
@@ -406,11 +427,23 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
 
 // ─── Source Indicator (internal) ──────────────────────────────────────────────
 
-function SourceIndicator({ sourceType }: { sourceType: string }) {
+function SourceIndicator({
+  sourceType,
+  isCentral,
+}: {
+  sourceType: string;
+  isCentral?: boolean;
+}) {
   const { t, i18n } = useTranslation();
   const isSymlink = sourceType === "symlink";
   const isNative = sourceType === "native";
-  const primaryLabel = isSymlink ? t("platform.sourceCentral") : t("platform.sourceStandalone");
+  const primaryLabel = isSymlink
+    ? isCentral
+      ? t("platform.sourceCentral")
+      : t("platform.sourceExternalSymlink", {
+          defaultValue: i18n.language.startsWith("zh") ? "外部符号链接" : "External symlink",
+        })
+    : t("platform.sourceStandalone");
   const secondaryLabel = isSymlink
     ? t("platform.sourceSymlinkLabel")
     : isNative

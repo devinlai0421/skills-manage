@@ -76,6 +76,13 @@ pub struct SkillDirectoryNode {
     pub children: Vec<SkillDirectoryNode>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeleteCentralSkillResult {
+    pub skill_id: String,
+    pub removed_agent_links: Vec<String>,
+    pub removed_central_path: String,
+}
+
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
 
 fn system_time_to_rfc3339(time: SystemTime) -> String {
@@ -235,6 +242,271 @@ fn installation_details(installations: Vec<db::SkillInstallation>) -> Vec<SkillI
             installed_at: i.created_at,
         })
         .collect()
+}
+
+fn ensure_plain_skill_id(skill_id: &str) -> Result<(), String> {
+    if skill_id.is_empty()
+        || skill_id == "."
+        || skill_id == ".."
+        || skill_id.contains('/')
+        || skill_id.contains('\\')
+    {
+        return Err(format!("Invalid skill id '{}'", skill_id));
+    }
+    Ok(())
+}
+
+fn ensure_central_skill_path(
+    skill_id: &str,
+    central_root: &Path,
+    central_dir: &Path,
+    central_metadata: Option<&std::fs::Metadata>,
+) -> Result<(), String> {
+    if central_dir.file_name().and_then(|name| name.to_str()) != Some(skill_id) {
+        return Err(format!(
+            "Central skill path '{}' does not match skill id '{}'",
+            central_dir.display(),
+            skill_id
+        ));
+    }
+
+    let canonical_root = central_root.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize central skills directory '{}': {}",
+            central_root.display(),
+            e
+        )
+    })?;
+    let parent = central_dir
+        .parent()
+        .ok_or_else(|| format!("Invalid central skill path '{}'", central_dir.display()))?;
+    let canonical_parent = parent.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize central skill parent '{}': {}",
+            parent.display(),
+            e
+        )
+    })?;
+    if canonical_parent != canonical_root {
+        return Err(format!(
+            "Central skill path '{}' is outside central skills directory '{}'",
+            central_dir.display(),
+            central_root.display()
+        ));
+    }
+
+    if central_metadata.is_some() {
+        let skill_md = central_dir.join("SKILL.md");
+        let skill_md_metadata = std::fs::symlink_metadata(&skill_md).map_err(|e| {
+            format!(
+                "Central skill '{}' does not contain SKILL.md: {}",
+                central_dir.display(),
+                e
+            )
+        })?;
+        if skill_md_metadata.file_type().is_symlink() || !skill_md_metadata.is_file() {
+            return Err(format!(
+                "Central skill '{}' does not contain a regular SKILL.md file",
+                central_dir.display()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_installed_path_matches_agent(
+    skill_id: &str,
+    agent: &db::Agent,
+    installed_path: &Path,
+) -> Result<(), String> {
+    if installed_path.file_name().and_then(|name| name.to_str()) != Some(skill_id) {
+        return Err(format!(
+            "Installed path '{}' does not match skill id '{}'",
+            installed_path.display(),
+            skill_id
+        ));
+    }
+
+    let expected_parent = PathBuf::from(&agent.global_skills_dir);
+    let actual_parent = installed_path
+        .parent()
+        .ok_or_else(|| format!("Invalid installed path '{}'", installed_path.display()))?;
+    let matches_parent = match (actual_parent.canonicalize(), expected_parent.canonicalize()) {
+        (Ok(actual), Ok(expected)) => actual == expected,
+        _ => actual_parent == expected_parent,
+    };
+    if !matches_parent {
+        return Err(format!(
+            "Installed path '{}' is outside agent '{}' skills directory '{}'",
+            installed_path.display(),
+            agent.id,
+            expected_parent.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn resolve_symlink_target(link_path: &Path, raw_target: &Path) -> PathBuf {
+    if raw_target.is_absolute() {
+        raw_target.to_path_buf()
+    } else {
+        link_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(raw_target)
+    }
+}
+
+fn symlink_points_to(link_path: &Path, expected_target: &Path) -> Result<bool, String> {
+    let raw_target = std::fs::read_link(link_path)
+        .map_err(|e| format!("Failed to read symlink '{}': {}", link_path.display(), e))?;
+    let resolved_target = resolve_symlink_target(link_path, &raw_target);
+    match (resolved_target.canonicalize(), expected_target.canonicalize()) {
+        (Ok(resolved), Ok(expected)) => Ok(resolved == expected),
+        _ => Ok(resolved_target == expected_target),
+    }
+}
+
+async fn delete_central_skill_impl(
+    pool: &DbPool,
+    skill_id: &str,
+) -> Result<DeleteCentralSkillResult, String> {
+    ensure_plain_skill_id(skill_id)?;
+    let skill = db::get_skill_by_id(pool, skill_id)
+        .await?
+        .ok_or_else(|| format!("Skill '{}' not found", skill_id))?;
+    if !skill.is_central {
+        return Err(format!("Skill '{}' is not a central skill", skill_id));
+    }
+
+    let central_path = skill
+        .canonical_path
+        .as_deref()
+        .ok_or_else(|| format!("Central skill '{}' has no canonical path", skill_id))?;
+    let central_dir = PathBuf::from(central_path);
+    let central_agent = db::get_agent_by_id(pool, "central")
+        .await?
+        .ok_or_else(|| "Central agent not found in database".to_string())?;
+    let central_root = PathBuf::from(&central_agent.global_skills_dir);
+    let installations = db::get_skill_installations(pool, skill_id).await?;
+    let mut symlinks_to_remove: Vec<(String, PathBuf)> = Vec::new();
+
+    for installation in &installations {
+        if installation.link_type != "symlink" {
+            continue;
+        }
+
+        let installed_path = PathBuf::from(&installation.installed_path);
+        let agent = db::get_agent_by_id(pool, &installation.agent_id)
+            .await?
+            .ok_or_else(|| format!("Agent '{}' not found", installation.agent_id))?;
+        ensure_installed_path_matches_agent(skill_id, &agent, &installed_path)?;
+        match std::fs::symlink_metadata(&installed_path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if !symlink_points_to(&installed_path, &central_dir)? {
+                    return Err(format!(
+                        "Refusing to delete symlink '{}' because it does not point to '{}'",
+                        installed_path.display(),
+                        central_dir.display()
+                    ));
+                }
+                symlinks_to_remove.push((installation.agent_id.clone(), installed_path));
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "Refusing to delete '{}' because it is not a symlink",
+                    installed_path.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect installed path '{}': {}",
+                    installed_path.display(),
+                    error
+                ));
+            }
+        }
+    }
+
+    let central_metadata = match std::fs::symlink_metadata(&central_dir) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "Failed to read central skill metadata '{}': {}",
+                central_dir.display(),
+                error
+            ));
+        }
+    };
+    if let Some(metadata) = &central_metadata {
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Refusing to delete central skill symlink '{}'",
+                central_dir.display()
+            ));
+        }
+        if !metadata.is_dir() {
+            return Err(format!(
+                "Refusing to delete non-directory central skill path '{}'",
+                central_dir.display()
+            ));
+        }
+    }
+    ensure_central_skill_path(skill_id, &central_root, &central_dir, central_metadata.as_ref())?;
+
+    for (_, path) in &symlinks_to_remove {
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect symlink before deletion '{}': {}",
+                    path.display(),
+                    error
+                ));
+            }
+        };
+        if !metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Refusing to delete '{}' because it is no longer a symlink",
+                path.display()
+            ));
+        }
+        if !symlink_points_to(path, &central_dir)? {
+            return Err(format!(
+                "Refusing to delete symlink '{}' because it no longer points to '{}'",
+                path.display(),
+                central_dir.display()
+            ));
+        }
+        std::fs::remove_file(path)
+            .map_err(|e| format!("Failed to remove symlink '{}': {}", path.display(), e))?;
+    }
+
+    if central_metadata.is_some() {
+        std::fs::remove_dir_all(&central_dir).map_err(|e| {
+            format!(
+                "Failed to remove central skill directory '{}': {}",
+                central_dir.display(),
+                e
+            )
+        })?;
+    }
+
+    db::delete_skill(pool, skill_id).await?;
+
+    Ok(DeleteCentralSkillResult {
+        skill_id: skill_id.to_string(),
+        removed_agent_links: symlinks_to_remove
+            .into_iter()
+            .map(|(agent_id, _)| agent_id)
+            .collect(),
+        removed_central_path: central_path.to_string(),
+    })
 }
 
 async fn get_claude_observation_detail(
@@ -426,6 +698,14 @@ pub async fn get_central_skills(state: State<'_, AppState>) -> Result<Vec<SkillW
     Ok(result)
 }
 
+#[tauri::command]
+pub async fn delete_central_skill(
+    state: State<'_, AppState>,
+    skill_id: String,
+) -> Result<DeleteCentralSkillResult, String> {
+    delete_central_skill_impl(&state.db, &skill_id).await
+}
+
 /// Tauri command: return detailed information about a skill, including all
 /// installation records across agents. Each installation includes `installed_at`
 /// (the `created_at` timestamp from the DB, renamed for frontend clarity).
@@ -522,6 +802,8 @@ mod tests {
     use chrono::Utc;
     use sqlx::SqlitePool;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
     use tempfile::TempDir;
 
     async fn setup_test_db() -> SqlitePool {
@@ -713,6 +995,256 @@ mod tests {
             "only central skills should be returned"
         );
         assert_eq!(skills_with_links[0].id, "c-skill");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_delete_central_skill_removes_central_dir_and_agent_symlinks() {
+        let pool = setup_test_db().await;
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let claude_dir = tmp.path().join("claude");
+        let cursor_dir = tmp.path().join("cursor");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::create_dir_all(&cursor_dir).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central_dir.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(claude_dir.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'cursor'")
+            .bind(cursor_dir.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let skill_dir = central_dir.join("delete-me");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: delete-me\n---\n").unwrap();
+        let skill = Skill {
+            id: "delete-me".to_string(),
+            name: "delete-me".to_string(),
+            description: None,
+            file_path: skill_dir.join("SKILL.md").to_string_lossy().into_owned(),
+            canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
+            is_central: true,
+            source: Some("native".to_string()),
+            content: None,
+            scanned_at: Utc::now().to_rfc3339(),
+        };
+        db::upsert_skill(&pool, &skill).await.unwrap();
+
+        let claude_link = claude_dir.join("delete-me");
+        let cursor_link = cursor_dir.join("delete-me");
+        symlink(&skill_dir, &claude_link).unwrap();
+        symlink(&skill_dir, &cursor_link).unwrap();
+        for (agent_id, installed_path) in [
+            ("claude-code", claude_link.to_string_lossy().into_owned()),
+            ("cursor", cursor_link.to_string_lossy().into_owned()),
+        ] {
+            db::upsert_skill_installation(
+                &pool,
+                &SkillInstallation {
+                    skill_id: "delete-me".to_string(),
+                    agent_id: agent_id.to_string(),
+                    installed_path,
+                    link_type: "symlink".to_string(),
+                    symlink_target: Some(skill_dir.to_string_lossy().into_owned()),
+                    created_at: Utc::now().to_rfc3339(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let result = delete_central_skill_impl(&pool, "delete-me").await.unwrap();
+
+        assert_eq!(result.skill_id, "delete-me");
+        assert!(!skill_dir.exists());
+        assert!(!claude_link.exists());
+        assert!(!claude_link.is_symlink());
+        assert!(!cursor_link.exists());
+        assert!(db::get_skill_by_id(&pool, "delete-me")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db::get_skill_installations(&pool, "delete-me")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_delete_central_skill_refuses_symlink_that_points_elsewhere() {
+        let pool = setup_test_db().await;
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("agent");
+        let other_dir = tmp.path().join("other-target");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+        fs::create_dir_all(&other_dir).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central_dir.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(agent_dir.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let skill_dir = central_dir.join("safe-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: safe-skill\n---\n").unwrap();
+        let skill = Skill {
+            id: "safe-skill".to_string(),
+            name: "safe-skill".to_string(),
+            description: None,
+            file_path: skill_dir.join("SKILL.md").to_string_lossy().into_owned(),
+            canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
+            is_central: true,
+            source: Some("native".to_string()),
+            content: None,
+            scanned_at: Utc::now().to_rfc3339(),
+        };
+        db::upsert_skill(&pool, &skill).await.unwrap();
+
+        let agent_link = agent_dir.join("safe-skill");
+        symlink(&other_dir, &agent_link).unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "safe-skill".to_string(),
+                agent_id: "claude-code".to_string(),
+                installed_path: agent_link.to_string_lossy().into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: Some(skill_dir.to_string_lossy().into_owned()),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = delete_central_skill_impl(&pool, "safe-skill").await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not point"));
+        assert!(skill_dir.exists());
+        assert!(agent_link.is_symlink());
+        assert!(db::get_skill_by_id(&pool, "safe-skill")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_delete_central_skill_refuses_canonical_path_outside_central_root() {
+        let pool = setup_test_db().await;
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let outside_dir = tmp.path().join("outside").join("poisoned-skill");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&outside_dir).unwrap();
+        fs::write(outside_dir.join("SKILL.md"), "---\nname: poisoned-skill\n---\n").unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central_dir.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let skill = Skill {
+            id: "poisoned-skill".to_string(),
+            name: "poisoned-skill".to_string(),
+            description: None,
+            file_path: outside_dir.join("SKILL.md").to_string_lossy().into_owned(),
+            canonical_path: Some(outside_dir.to_string_lossy().into_owned()),
+            is_central: true,
+            source: Some("native".to_string()),
+            content: None,
+            scanned_at: Utc::now().to_rfc3339(),
+        };
+        db::upsert_skill(&pool, &skill).await.unwrap();
+
+        let result = delete_central_skill_impl(&pool, "poisoned-skill").await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("outside central skills directory"));
+        assert!(outside_dir.exists());
+        assert!(db::get_skill_by_id(&pool, "poisoned-skill")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_delete_central_skill_refuses_installed_path_outside_agent_root() {
+        let pool = setup_test_db().await;
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("agent");
+        let outside_agent_dir = tmp.path().join("outside-agent");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+        fs::create_dir_all(&outside_agent_dir).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central_dir.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(agent_dir.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let skill_dir = central_dir.join("bounded-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: bounded-skill\n---\n").unwrap();
+        let skill = Skill {
+            id: "bounded-skill".to_string(),
+            name: "bounded-skill".to_string(),
+            description: None,
+            file_path: skill_dir.join("SKILL.md").to_string_lossy().into_owned(),
+            canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
+            is_central: true,
+            source: Some("native".to_string()),
+            content: None,
+            scanned_at: Utc::now().to_rfc3339(),
+        };
+        db::upsert_skill(&pool, &skill).await.unwrap();
+
+        let outside_link = outside_agent_dir.join("bounded-skill");
+        symlink(&skill_dir, &outside_link).unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "bounded-skill".to_string(),
+                agent_id: "claude-code".to_string(),
+                installed_path: outside_link.to_string_lossy().into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: Some(skill_dir.to_string_lossy().into_owned()),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = delete_central_skill_impl(&pool, "bounded-skill").await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("outside agent"));
+        assert!(outside_link.is_symlink());
+        assert!(skill_dir.exists());
     }
 
     // ── get_skill_detail ──────────────────────────────────────────────────────

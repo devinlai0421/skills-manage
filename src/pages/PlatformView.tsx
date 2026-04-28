@@ -1,12 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Search, Blocks } from "lucide-react";
+import { ArrowUpRight, RefreshCw, Search, Blocks } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useSkillStore } from "@/stores/skillStore";
 import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
@@ -37,12 +48,16 @@ export function PlatformView() {
   const { t, i18n } = useTranslation();
   const agents = usePlatformStore((state) => state.agents);
   const scanGeneration = usePlatformStore((state) => state.scanGeneration ?? 0);
+  const isRefreshing = usePlatformStore((state) => state.isRefreshing);
 
   const skillsByAgent = useSkillStore((state) => state.skillsByAgent);
   const loadingByAgent = useSkillStore((state) => state.loadingByAgent);
   const pendingSkillActionKeys = useSkillStore((state) => state.pendingSkillActionKeys);
+  const pendingMigrationKeys = useSkillStore((state) => state.pendingMigrationKeys);
+  const isBatchMigrating = useSkillStore((state) => state.isBatchMigrating);
   const getSkillsByAgent = useSkillStore((state) => state.getSkillsByAgent);
   const uninstallSkillFromAgent = useSkillStore((state) => state.uninstallSkillFromAgent);
+  const migrateSkillToCentral = useSkillStore((state) => state.migrateSkillToCentral);
 
   const centralSkills = useCentralSkillsStore((state) => state.skills);
   const centralAgents = useCentralSkillsStore((state) => state.agents);
@@ -54,6 +69,11 @@ export function PlatformView() {
   const [sourceFilter, setSourceFilter] = useState<ClaudeSourceFilter>("all");
   const [installTargetSkill, setInstallTargetSkill] = useState<SkillWithLinks | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isMigrationDialogOpen, setIsMigrationDialogOpen] = useState(false);
+  const [selectedMigrationKeys, setSelectedMigrationKeys] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [isSelectedMigrationRunning, setIsSelectedMigrationRunning] = useState(false);
   const [drawerSkill, setDrawerSkill] = useState<ScannedSkill | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [returnFocusRowKey, setReturnFocusRowKey] = useState<string | null>(null);
@@ -126,6 +146,111 @@ export function PlatformView() {
     }
   }
 
+  async function handleRefreshAgentSkills() {
+    if (!agentId) return;
+    try {
+      await refreshCounts();
+      await getSkillsByAgent(agentId);
+    } catch (err) {
+      toast.error(t("platform.refreshError", { error: String(err) }));
+    }
+  }
+
+  function canMigrateSkill(skill: ScannedSkill) {
+    return !skill.is_read_only && !skill.is_central;
+  }
+
+  async function handleMigrateSkill(skill: ScannedSkill) {
+    if (!agentId || !agent) return;
+    const confirmed = window.confirm(
+      t("platform.migrateConfirm", {
+        skill: skill.name,
+        platform: agent.display_name,
+      })
+    );
+    if (!confirmed) return;
+
+    try {
+      await migrateSkillToCentral(agentId, skill.id, skill.row_id);
+      await Promise.all([loadCentralSkills(), refreshCounts()]);
+      toast.success(t("platform.migrateSuccess", { skill: skill.name }));
+    } catch (err) {
+      toast.error(t("platform.migrateError", { error: String(err) }));
+    }
+  }
+
+  function handleOpenMigrationDialog() {
+    setSelectedMigrationKeys(new Set());
+    setIsMigrationDialogOpen(true);
+  }
+
+  function toggleMigrationSelection(skill: ScannedSkill) {
+    const key = getSkillRowKey(skill);
+    setSelectedMigrationKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
+
+  function toggleSelectAllMigrationSkills() {
+    setSelectedMigrationKeys((current) => {
+      if (current.size === migratableSkills.length) {
+        return new Set();
+      }
+      return new Set(migratableSkills.map(getSkillRowKey));
+    });
+  }
+
+  async function handleMigrateSelectedSkills() {
+    if (!agentId || !agent) return;
+    if (selectedMigrationSkills.length === 0) return;
+
+    setIsSelectedMigrationRunning(true);
+    let succeeded = 0;
+    let failed = 0;
+    const failedSkills: ScannedSkill[] = [];
+    try {
+      for (const skill of selectedMigrationSkills) {
+        try {
+          await migrateSkillToCentral(agentId, skill.id, skill.row_id);
+          succeeded += 1;
+        } catch {
+          failed += 1;
+          failedSkills.push(skill);
+        }
+      }
+      await Promise.all([loadCentralSkills(), refreshCounts()]);
+      if (failed > 0) {
+        setSelectedMigrationKeys(new Set(failedSkills.map(getSkillRowKey)));
+        toast.error(
+          t("platform.batchMigratePartialError", {
+            succeeded,
+            failed,
+          })
+        );
+        return;
+      }
+      toast.success(
+        t("platform.batchMigrateSuccess", {
+          succeeded,
+          skipped: 0,
+          failed,
+        })
+      );
+      setIsMigrationDialogOpen(false);
+      setSelectedMigrationKeys(new Set());
+    } catch (err) {
+      toast.error(t("platform.migrateError", { error: String(err) }));
+    } finally {
+      setIsSelectedMigrationRunning(false);
+    }
+  }
+
   const isLoading = agentId ? (loadingByAgent[agentId] ?? false) : false;
 
   // Memoize skills to avoid changing dependency reference on every render
@@ -133,6 +258,15 @@ export function PlatformView() {
     () => (agentId ? (skillsByAgent[agentId] ?? []) : []),
     [agentId, skillsByAgent]
   );
+  const migratableSkills = useMemo(
+    () => skills.filter(canMigrateSkill),
+    [skills]
+  );
+  const selectedMigrationSkills = useMemo(
+    () => migratableSkills.filter((skill) => selectedMigrationKeys.has(getSkillRowKey(skill))),
+    [migratableSkills, selectedMigrationKeys]
+  );
+  const isMigrating = isBatchMigrating || isSelectedMigrationRunning;
 
   const sourceFilteredSkills = useMemo(() => {
     if (!isClaudePage || sourceFilter === "all") {
@@ -239,13 +373,36 @@ export function PlatformView() {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="border-b border-border px-6 py-4">
-        <div className="flex items-center gap-2.5">
-          <PlatformIcon agentId={agent.id} className="size-6 text-primary/70" size={24} />
-          <h1 className="text-xl font-semibold">{agent.display_name}</h1>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2.5">
+              <PlatformIcon agentId={agent.id} className="size-6 text-primary/70" size={24} />
+              <h1 className="text-xl font-semibold">{agent.display_name}</h1>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={handleRefreshAgentSkills}
+                disabled={isLoading || isRefreshing}
+                aria-label={t("platform.refreshAgentSkills")}
+              >
+                <RefreshCw className={`size-4 ${isRefreshing ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              {formatPathForDisplay(agent.global_skills_dir)}
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            onClick={handleOpenMigrationDialog}
+            disabled={isMigrating || migratableSkills.length === 0}
+          >
+            <ArrowUpRight className="size-4" />
+            {t("platform.batchMigrateToCentral")}
+          </Button>
         </div>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          {formatPathForDisplay(agent.global_skills_dir)}
-        </p>
       </div>
 
       {isClaudePage && (
@@ -320,11 +477,14 @@ export function PlatformView() {
                 name={skill.name}
                 description={skill.description}
                 sourceType={skill.link_type as "symlink" | "copy" | "native"}
+                isCentral={skill.is_central}
                 originKind={skill.source_kind ?? null}
                 isReadOnly={skill.is_read_only ?? false}
                 isLoading={
                   agentId
-                    ? (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false)
+                    ? isMigrating
+                      || (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false)
+                      || (pendingMigrationKeys[`${agentId}::${skill.id}`] ?? false)
                     : false
                 }
                 onDetail={() => handleOpenDrawer(skill)}
@@ -332,6 +492,9 @@ export function PlatformView() {
                   skill.is_read_only
                     ? undefined
                     : () => handleInstallClick(skill.id)
+                }
+                onMigrateToCentral={
+                  canMigrateSkill(skill) ? () => handleMigrateSkill(skill) : undefined
                 }
                 onUninstallFromPlatform={
                   skill.is_read_only
@@ -360,6 +523,82 @@ export function PlatformView() {
         agents={centralAgents}
         onInstall={handleInstall}
       />
+
+      <Dialog
+        open={isMigrationDialogOpen}
+        onOpenChange={(open) => {
+          if (isSelectedMigrationRunning) return;
+          setIsMigrationDialogOpen(open);
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("platform.migrateSelectionTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("platform.migrateSelectionDesc", { platform: agent.display_name })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-3">
+            <label className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
+              <Checkbox
+                checked={
+                  migratableSkills.length > 0 &&
+                  selectedMigrationKeys.size === migratableSkills.length
+                }
+                disabled={isSelectedMigrationRunning}
+                onCheckedChange={toggleSelectAllMigrationSkills}
+                aria-label={t("platform.migrateSelectAll")}
+              />
+              <span className="font-medium">{t("platform.migrateSelectAll")}</span>
+              <span className="ml-auto text-xs text-muted-foreground">
+                {t("platform.migrateSelectionCount", {
+                  selected: selectedMigrationSkills.length,
+                  total: migratableSkills.length,
+                })}
+              </span>
+            </label>
+
+            <div className="space-y-2">
+              {migratableSkills.map((skill) => (
+                <label
+                  key={getSkillRowKey(skill)}
+                  className="flex items-start gap-3 rounded-lg border border-border px-3 py-2 text-sm"
+                >
+                  <Checkbox
+                    checked={selectedMigrationKeys.has(getSkillRowKey(skill))}
+                    disabled={isSelectedMigrationRunning}
+                    onCheckedChange={() => toggleMigrationSelection(skill)}
+                    aria-label={skill.name}
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium">{skill.name}</span>
+                    {skill.description && (
+                      <span className="line-clamp-2 block text-xs text-muted-foreground">
+                        {skill.description}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsMigrationDialogOpen(false)}
+              disabled={isSelectedMigrationRunning}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              onClick={handleMigrateSelectedSkills}
+              disabled={isSelectedMigrationRunning || selectedMigrationSkills.length === 0}
+            >
+              {t("platform.migrateSelected")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <SkillDetailDrawer
         open={isDrawerOpen}

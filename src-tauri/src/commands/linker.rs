@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use super::scanner::parse_skill_md;
 use crate::db::{self, DbPool, SkillInstallation};
 use crate::AppState;
 
@@ -26,6 +27,31 @@ pub struct BatchInstallResult {
 pub struct FailedInstall {
     pub agent_id: String,
     pub error: String,
+}
+
+/// Result of migrating one agent-local skill into the central repository.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrateAgentSkillResult {
+    pub skill_id: String,
+    pub agent_id: String,
+    pub central_path: String,
+    pub installed_path: String,
+    pub link_type: String,
+}
+
+/// Describes a single failed or skipped migration in a batch operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailedMigration {
+    pub skill_id: String,
+    pub error: String,
+}
+
+/// Result of migrating all eligible local skills for an agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchMigrateAgentSkillsResult {
+    pub succeeded: Vec<MigrateAgentSkillResult>,
+    pub skipped: Vec<FailedMigration>,
+    pub failed: Vec<FailedMigration>,
 }
 
 // ─── Path Utilities ───────────────────────────────────────────────────────────
@@ -121,9 +147,16 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
 
-        let file_type = entry
-            .file_type()
-            .map_err(|e| format!("Failed to determine file type: {}", e))?;
+        let file_type = std::fs::symlink_metadata(&src_path)
+            .map_err(|e| format!("Failed to determine file type: {}", e))?
+            .file_type();
+
+        if file_type.is_symlink() {
+            return Err(format!(
+                "Refusing to copy symlink inside skill directory: '{}'",
+                src_path.display()
+            ));
+        }
 
         if file_type.is_dir() {
             copy_dir_all(&src_path, &dst_path)?;
@@ -211,6 +244,8 @@ pub async fn install_skill_to_agent_impl(
     skill_id: &str,
     agent_id: &str,
 ) -> Result<InstallResult, String> {
+    ensure_plain_skill_id(skill_id)?;
+
     // Guard: cannot install to the central agent itself.
     if agent_id == "central" {
         return Err("Cannot install a skill to the central agent itself".to_string());
@@ -317,6 +352,8 @@ pub async fn install_skill_to_agent_copy_impl(
     skill_id: &str,
     agent_id: &str,
 ) -> Result<InstallResult, String> {
+    ensure_plain_skill_id(skill_id)?;
+
     // Guard: cannot install to the central agent itself.
     if agent_id == "central" {
         return Err("Cannot install a skill to the central agent itself".to_string());
@@ -386,6 +423,631 @@ pub async fn install_skill_to_agent_copy_impl(
     })
 }
 
+fn ensure_plain_skill_id(skill_id: &str) -> Result<(), String> {
+    let mut components = Path::new(skill_id).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None) if !skill_id.is_empty() => Ok(()),
+        _ => Err(format!("Invalid skill id '{}'", skill_id)),
+    }
+}
+
+fn unique_migration_path(parent: &Path, skill_id: &str, suffix: &str) -> PathBuf {
+    parent.join(format!(
+        ".{}.{}.{}",
+        skill_id,
+        suffix,
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ))
+}
+
+fn restore_backup(backup_path: &Path, source_dir: &Path) -> Result<(), String> {
+    if source_dir.exists() || std::fs::symlink_metadata(source_dir).is_ok() {
+        return Err(format!(
+            "Cannot restore backup because '{}' already exists; backup kept at '{}'",
+            source_dir.display(),
+            backup_path.display()
+        ));
+    }
+    std::fs::rename(backup_path, source_dir).map_err(|e| {
+        format!(
+            "Migration failed and restoring '{}' from backup '{}' also failed: {}",
+            source_dir.display(),
+            backup_path.display(),
+            e
+        )
+    })
+}
+
+fn source_dir_for_migration(
+    pool_skills: &[db::SkillForAgent],
+    agent_dir: &Path,
+    skill_id: &str,
+    row_id: Option<&str>,
+) -> Result<PathBuf, String> {
+    if let Some(row_id) = row_id {
+        let skill = pool_skills
+            .iter()
+            .find(|skill| skill.row_id == row_id)
+            .ok_or_else(|| format!("Skill row '{}' not found for migration", row_id))?;
+        if skill.id != skill_id {
+            return Err(format!(
+                "Skill row '{}' belongs to '{}', not '{}'",
+                row_id, skill.id, skill_id
+            ));
+        }
+        if skill.is_read_only {
+            return Err("Read-only skills cannot be migrated".to_string());
+        }
+        if skill.is_central {
+            return Err("Current central skills cannot be migrated".to_string());
+        }
+        if !matches!(skill.link_type.as_str(), "copy" | "native" | "symlink") {
+            return Err(format!(
+                "Only local skills can be migrated; found '{}'",
+                skill.link_type
+            ));
+        }
+        return Ok(PathBuf::from(&skill.dir_path));
+    }
+
+    let expected_dir = agent_dir.join(skill_id);
+    if let Some(skill) = pool_skills
+        .iter()
+        .find(|skill| skill.id == skill_id && PathBuf::from(&skill.dir_path) == expected_dir)
+    {
+        if skill.is_read_only {
+            return Err("Read-only skills cannot be migrated".to_string());
+        }
+        if skill.is_central {
+            return Err("Current central skills cannot be migrated".to_string());
+        }
+        if !matches!(skill.link_type.as_str(), "copy" | "native" | "symlink") {
+            return Err(format!(
+                "Only local skills can be migrated; found '{}'",
+                skill.link_type
+            ));
+        }
+        return Ok(PathBuf::from(&skill.dir_path));
+    }
+
+    Ok(agent_dir.join(skill_id))
+}
+
+fn ensure_source_within_agent_dir(source_dir: &Path, agent_dir: &Path) -> Result<(), String> {
+    let canonical_source = source_dir.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize source '{}': {}",
+            source_dir.display(),
+            e
+        )
+    })?;
+    let canonical_agent = agent_dir.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize agent directory '{}': {}",
+            agent_dir.display(),
+            e
+        )
+    })?;
+
+    if !canonical_source.starts_with(&canonical_agent) {
+        return Err(format!(
+            "Skill source '{}' is outside agent skills directory '{}'",
+            source_dir.display(),
+            agent_dir.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_entry_within_agent_dir(entry_path: &Path, agent_dir: &Path) -> Result<(), String> {
+    let entry_parent = entry_path
+        .parent()
+        .ok_or_else(|| format!("Invalid skill entry path '{}'", entry_path.display()))?
+        .canonicalize()
+        .map_err(|e| {
+            format!(
+                "Failed to canonicalize skill entry parent '{}': {}",
+                entry_path.display(),
+                e
+            )
+        })?;
+    let canonical_agent = agent_dir.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize agent directory '{}': {}",
+            agent_dir.display(),
+            e
+        )
+    })?;
+
+    if !entry_parent.starts_with(&canonical_agent) {
+        return Err(format!(
+            "Skill entry '{}' is outside agent skills directory '{}'",
+            entry_path.display(),
+            agent_dir.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn resolve_top_level_symlink_target(link_path: &Path) -> Result<PathBuf, String> {
+    let raw_target = std::fs::read_link(link_path)
+        .map_err(|e| format!("Failed to read symlink '{}': {}", link_path.display(), e))?;
+    let resolved_target = if raw_target.is_absolute() {
+        raw_target
+    } else {
+        link_path
+            .parent()
+            .ok_or_else(|| format!("Invalid symlink path '{}'", link_path.display()))?
+            .join(raw_target)
+    };
+    let target_meta = std::fs::symlink_metadata(&resolved_target).map_err(|e| {
+        format!(
+            "Symlink target '{}' for '{}' not found: {}",
+            resolved_target.display(),
+            link_path.display(),
+            e
+        )
+    })?;
+
+    if target_meta.file_type().is_symlink() || !target_meta.is_dir() {
+        return Err(format!(
+            "Only symlinks to real skill directories can be migrated; '{}' is not a real directory",
+            resolved_target.display()
+        ));
+    }
+
+    Ok(resolved_target)
+}
+
+fn ensure_central_root_outside_source(
+    source_dir: &Path,
+    central_root: &Path,
+) -> Result<(), String> {
+    let canonical_source = source_dir.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize source '{}': {}",
+            source_dir.display(),
+            e
+        )
+    })?;
+    let intended_central = canonicalize_existing_parent_with_suffix(central_root)?;
+
+    if intended_central.starts_with(&canonical_source) {
+        return Err(format!(
+            "Central skills directory '{}' cannot be inside source skill directory '{}'",
+            central_root.display(),
+            source_dir.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn canonicalize_existing_parent_with_suffix(path: &Path) -> Result<PathBuf, String> {
+    let mut existing = path;
+    while !existing.exists() {
+        existing = existing
+            .parent()
+            .ok_or_else(|| format!("No existing parent found for '{}'", path.display()))?;
+    }
+
+    let mut normalized = existing.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize existing parent '{}': {}",
+            existing.display(),
+            e
+        )
+    })?;
+    let suffix = path.strip_prefix(existing).map_err(|e| {
+        format!(
+            "Failed to compute path suffix for '{}' from '{}': {}",
+            path.display(),
+            existing.display(),
+            e
+        )
+    })?;
+
+    for component in suffix.components() {
+        match component {
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported path component in '{}'",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    Ok(normalized)
+}
+
+async fn persist_migration_records(
+    pool: &DbPool,
+    skill: &db::Skill,
+    installation: &SkillInstallation,
+    observation: Option<&db::AgentSkillObservation>,
+) -> Result<(), String> {
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "INSERT INTO skills
+         (id, name, description, file_path, canonical_path, is_central, source, content, scanned_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name           = excluded.name,
+           description    = excluded.description,
+           file_path      = excluded.file_path,
+           canonical_path = COALESCE(excluded.canonical_path, skills.canonical_path),
+           is_central     = MAX(skills.is_central, excluded.is_central),
+           source         = excluded.source,
+           content        = excluded.content,
+           scanned_at     = excluded.scanned_at",
+    )
+    .bind(&skill.id)
+    .bind(&skill.name)
+    .bind(&skill.description)
+    .bind(&skill.file_path)
+    .bind(&skill.canonical_path)
+    .bind(skill.is_central)
+    .bind(&skill.source)
+    .bind(&skill.content)
+    .bind(&skill.scanned_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "INSERT INTO skill_installations
+         (skill_id, agent_id, installed_path, link_type, symlink_target, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(skill_id, agent_id) DO UPDATE SET
+           installed_path = excluded.installed_path,
+           link_type      = excluded.link_type,
+           symlink_target = excluded.symlink_target",
+    )
+    .bind(&installation.skill_id)
+    .bind(&installation.agent_id)
+    .bind(&installation.installed_path)
+    .bind(&installation.link_type)
+    .bind(&installation.symlink_target)
+    .bind(&installation.created_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some(observation) = observation {
+        sqlx::query(
+            "INSERT INTO agent_skill_observations
+             (row_id, agent_id, skill_id, name, description, file_path, dir_path,
+              source_kind, source_root, link_type, symlink_target, is_read_only, scanned_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(row_id) DO UPDATE SET
+               agent_id       = excluded.agent_id,
+               skill_id       = excluded.skill_id,
+               name           = excluded.name,
+               description    = excluded.description,
+               file_path      = excluded.file_path,
+               dir_path       = excluded.dir_path,
+               source_kind    = excluded.source_kind,
+               source_root    = excluded.source_root,
+               link_type      = excluded.link_type,
+               symlink_target = excluded.symlink_target,
+               is_read_only   = excluded.is_read_only,
+               scanned_at     = excluded.scanned_at",
+        )
+        .bind(&observation.row_id)
+        .bind(&observation.agent_id)
+        .bind(&observation.skill_id)
+        .bind(&observation.name)
+        .bind(&observation.description)
+        .bind(&observation.file_path)
+        .bind(&observation.dir_path)
+        .bind(&observation.source_kind)
+        .bind(&observation.source_root)
+        .bind(&observation.link_type)
+        .bind(&observation.symlink_target)
+        .bind(observation.is_read_only)
+        .bind(&observation.scanned_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
+fn rollback_filesystem_migration(
+    source_dir: &Path,
+    backup_source_dir: &Path,
+    central_dir: &Path,
+) -> Result<(), String> {
+    match std::fs::symlink_metadata(source_dir) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            std::fs::remove_file(source_dir)
+                .map_err(|e| format!("Failed to remove migrated symlink during rollback: {}", e))?;
+        }
+        Ok(_) => {
+            return Err(format!(
+                "Cannot rollback migration because '{}' is no longer the expected symlink",
+                source_dir.display()
+            ));
+        }
+        Err(_) => {}
+    }
+
+    restore_backup(backup_source_dir, source_dir)?;
+    if let Err(error) = std::fs::remove_dir_all(central_dir) {
+        return Err(format!(
+            "Restored source but failed to remove central copy '{}': {}",
+            central_dir.display(),
+            error
+        ));
+    }
+    Ok(())
+}
+
+fn cleanup_backup_source(backup_source_dir: &Path) {
+    match std::fs::symlink_metadata(backup_source_dir) {
+        Ok(meta) if meta.file_type().is_symlink() || meta.is_file() => {
+            let _ = std::fs::remove_file(backup_source_dir);
+        }
+        Ok(meta) if meta.is_dir() => {
+            let _ = std::fs::remove_dir_all(backup_source_dir);
+        }
+        _ => {}
+    }
+}
+
+/// Migrate one agent-local skill directory into central storage and replace the
+/// agent entry with a symlink back to the new central copy.
+pub async fn migrate_agent_skill_to_central_impl(
+    pool: &DbPool,
+    agent_id: &str,
+    skill_id: &str,
+    row_id: Option<&str>,
+) -> Result<MigrateAgentSkillResult, String> {
+    if agent_id == "central" {
+        return Err("Cannot migrate skills from the central agent".to_string());
+    }
+    ensure_plain_skill_id(skill_id)?;
+
+    let agent = db::get_agent_by_id(pool, agent_id)
+        .await?
+        .ok_or_else(|| format!("Agent '{}' not found", agent_id))?;
+    let central = db::get_agent_by_id(pool, "central")
+        .await?
+        .ok_or_else(|| "Central agent not found in database".to_string())?;
+
+    let agent_dir = PathBuf::from(&agent.global_skills_dir);
+    let central_root = PathBuf::from(&central.global_skills_dir);
+    let central_dir = central_root.join(skill_id);
+    if std::fs::symlink_metadata(&central_dir).is_ok() {
+        return Err(format!(
+            "Central skill '{}' already exists at '{}'",
+            skill_id,
+            central_dir.display()
+        ));
+    }
+
+    let agent_skills = db::get_skills_for_agent(pool, agent_id).await?;
+    let source_dir = source_dir_for_migration(&agent_skills, &agent_dir, skill_id, row_id)?;
+    let source_meta = std::fs::symlink_metadata(&source_dir)
+        .map_err(|e| format!("Skill source '{}' not found: {}", source_dir.display(), e))?;
+    let copy_source_dir = if source_meta.file_type().is_symlink() {
+        ensure_entry_within_agent_dir(&source_dir, &agent_dir)?;
+        resolve_top_level_symlink_target(&source_dir)?
+    } else if source_meta.is_dir() {
+        ensure_source_within_agent_dir(&source_dir, &agent_dir)?;
+        source_dir.clone()
+    } else {
+        return Err(format!(
+            "Only local directory or external symlink skills can be migrated; '{}' is not a directory or symlink",
+            source_dir.display()
+        ));
+    };
+
+    let source_skill_md = copy_source_dir.join("SKILL.md");
+    let skill_info = parse_skill_md(&source_skill_md).ok_or_else(|| {
+        format!(
+            "Skill source '{}' does not contain a valid SKILL.md",
+            copy_source_dir.display()
+        )
+    })?;
+
+    ensure_central_root_outside_source(&copy_source_dir, &central_root)?;
+    std::fs::create_dir_all(&central_root)
+        .map_err(|e| format!("Failed to create central skills directory: {}", e))?;
+    let temp_central_dir = unique_migration_path(&central_root, skill_id, "tmp");
+    let backup_source_dir = unique_migration_path(
+        source_dir
+            .parent()
+            .ok_or_else(|| format!("Invalid source directory '{}'", source_dir.display()))?,
+        skill_id,
+        "backup",
+    );
+
+    if let Err(error) = copy_dir_all(&copy_source_dir, &temp_central_dir) {
+        let _ = std::fs::remove_dir_all(&temp_central_dir);
+        return Err(error);
+    }
+    if parse_skill_md(&temp_central_dir.join("SKILL.md")).is_none() {
+        let _ = std::fs::remove_dir_all(&temp_central_dir);
+        return Err("Copied skill does not contain a valid SKILL.md".to_string());
+    }
+
+    std::fs::rename(&temp_central_dir, &central_dir).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&temp_central_dir);
+        format!(
+            "Failed to move migrated skill into central directory '{}': {}",
+            central_dir.display(),
+            e
+        )
+    })?;
+
+    std::fs::rename(&source_dir, &backup_source_dir).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&central_dir);
+        format!(
+            "Failed to backup source skill directory '{}': {}",
+            source_dir.display(),
+            e
+        )
+    })?;
+
+    let symlink_target = symlink_target_path(&agent_dir, &central_dir);
+    if std::fs::symlink_metadata(&source_dir).is_ok() {
+        let restore_result = restore_backup(&backup_source_dir, &source_dir);
+        let _ = std::fs::remove_dir_all(&central_dir);
+        return match restore_result {
+            Ok(()) => Err(format!(
+                "Cannot create symlink because '{}' already exists",
+                source_dir.display()
+            )),
+            Err(restore_error) => Err(restore_error),
+        };
+    }
+    if let Err(error) = create_symlink(&symlink_target, &source_dir) {
+        let restore_result = restore_backup(&backup_source_dir, &source_dir);
+        let _ = std::fs::remove_dir_all(&central_dir);
+        return match restore_result {
+            Ok(()) => Err(error),
+            Err(restore_error) => Err(format!("{}; {}", error, restore_error)),
+        };
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let skill = db::Skill {
+        id: skill_id.to_string(),
+        name: skill_info.name,
+        description: skill_info.description,
+        file_path: central_dir.join("SKILL.md").to_string_lossy().into_owned(),
+        canonical_path: Some(central_dir.to_string_lossy().into_owned()),
+        is_central: true,
+        source: Some("native".to_string()),
+        content: None,
+        scanned_at: now.clone(),
+    };
+
+    let installation = SkillInstallation {
+        skill_id: skill_id.to_string(),
+        agent_id: agent_id.to_string(),
+        installed_path: source_dir.to_string_lossy().into_owned(),
+        link_type: "symlink".to_string(),
+        symlink_target: Some(central_dir.to_string_lossy().into_owned()),
+        created_at: now,
+    };
+    let migrated_observation = agent_skills
+        .iter()
+        .find(|observed| PathBuf::from(&observed.dir_path) == source_dir && !observed.is_read_only)
+        .and_then(|observed| {
+            Some(db::AgentSkillObservation {
+                row_id: observed.row_id.clone(),
+                agent_id: agent_id.to_string(),
+                skill_id: skill_id.to_string(),
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                file_path: source_dir.join("SKILL.md").to_string_lossy().into_owned(),
+                dir_path: source_dir.to_string_lossy().into_owned(),
+                source_kind: observed.source_kind.clone()?,
+                source_root: observed.source_root.clone()?,
+                link_type: "symlink".to_string(),
+                symlink_target: Some(central_dir.to_string_lossy().into_owned()),
+                is_read_only: false,
+                scanned_at: skill.scanned_at.clone(),
+            })
+        });
+    if let Err(error) =
+        persist_migration_records(pool, &skill, &installation, migrated_observation.as_ref()).await
+    {
+        let rollback_result =
+            rollback_filesystem_migration(&source_dir, &backup_source_dir, &central_dir);
+        return match rollback_result {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!("{}; {}", error, rollback_error)),
+        };
+    }
+
+    cleanup_backup_source(&backup_source_dir);
+
+    Ok(MigrateAgentSkillResult {
+        skill_id: skill_id.to_string(),
+        agent_id: agent_id.to_string(),
+        central_path: central_dir.to_string_lossy().into_owned(),
+        installed_path: source_dir.to_string_lossy().into_owned(),
+        link_type: "symlink".to_string(),
+    })
+}
+
+pub async fn batch_migrate_agent_skills_to_central_impl(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<BatchMigrateAgentSkillsResult, String> {
+    if agent_id == "central" {
+        return Err("Cannot migrate skills from the central agent".to_string());
+    }
+    let agent = db::get_agent_by_id(pool, agent_id)
+        .await?
+        .ok_or_else(|| format!("Agent '{}' not found", agent_id))?;
+    let agent_dir = PathBuf::from(&agent.global_skills_dir);
+
+    let mut candidates = Vec::new();
+    let entries = std::fs::read_dir(&agent_dir).map_err(|e| {
+        format!(
+            "Failed to read agent skills directory '{}': {}",
+            agent_dir.display(),
+            e
+        )
+    })?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let skill_id = match path.file_name().and_then(|name| name.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        candidates.push((skill_id, path));
+    }
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut result = BatchMigrateAgentSkillsResult {
+        succeeded: Vec::new(),
+        skipped: Vec::new(),
+        failed: Vec::new(),
+    };
+
+    for (skill_id, path) in candidates {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if !meta.file_type().is_symlink() && !meta.is_dir() => {
+                result.skipped.push(FailedMigration {
+                    skill_id,
+                    error: "Only local directory or external symlink skills can be migrated"
+                        .to_string(),
+                });
+            }
+            Ok(_) => {
+                match migrate_agent_skill_to_central_impl(pool, agent_id, &skill_id, None).await {
+                    Ok(migrated) => result.succeeded.push(migrated),
+                    Err(error) if error.contains("already exists") => {
+                        result.skipped.push(FailedMigration { skill_id, error });
+                    }
+                    Err(error) => result.failed.push(FailedMigration { skill_id, error }),
+                }
+            }
+            Err(error) => result.skipped.push(FailedMigration {
+                skill_id,
+                error: error.to_string(),
+            }),
+        }
+    }
+
+    Ok(result)
+}
+
 /// Core uninstall logic, separated from the Tauri layer for testability.
 ///
 /// Removes the symlink at `agent.global_skills_dir/<skill_id>` and deletes the
@@ -399,6 +1061,8 @@ pub async fn uninstall_skill_from_agent_impl(
     skill_id: &str,
     agent_id: &str,
 ) -> Result<(), String> {
+    ensure_plain_skill_id(skill_id)?;
+
     // 1. Look up the agent.
     let agent = db::get_agent_by_id(pool, agent_id)
         .await?
@@ -510,6 +1174,24 @@ pub async fn batch_install_to_agents(
     Ok(BatchInstallResult { succeeded, failed })
 }
 
+#[tauri::command]
+pub async fn migrate_agent_skill_to_central(
+    state: State<'_, AppState>,
+    agent_id: String,
+    skill_id: String,
+    row_id: Option<String>,
+) -> Result<MigrateAgentSkillResult, String> {
+    migrate_agent_skill_to_central_impl(&state.db, &agent_id, &skill_id, row_id.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn batch_migrate_agent_skills_to_central(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<BatchMigrateAgentSkillsResult, String> {
+    batch_migrate_agent_skills_to_central_impl(&state.db, &agent_id).await
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -556,6 +1238,21 @@ mod tests {
             ),
         )
         .unwrap();
+        skill_dir
+    }
+
+    fn create_agent_skill(agent_dir: &Path, skill_id: &str) -> PathBuf {
+        let skill_dir = agent_dir.join(skill_id);
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!(
+                "---\nname: {}\ndescription: Agent local skill\n---\n\n# {}\n",
+                skill_id, skill_id
+            ),
+        )
+        .unwrap();
+        fs::write(skill_dir.join("notes.txt"), "local notes").unwrap();
         skill_dir
     }
 
@@ -738,6 +1435,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_install_rejects_path_traversal_skill_id() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &agent_dir).await;
+
+        let result = install_skill_to_agent_impl(&pool, "../escape", "claude-code").await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid skill id"));
+    }
+
+    #[tokio::test]
     async fn test_install_replaces_existing_symlink() {
         let tmp = TempDir::new().unwrap();
         let central_dir = tmp.path().join("central");
@@ -856,6 +1567,20 @@ mod tests {
             agent_dir.join("protected-skill").is_dir(),
             "real directory should NOT have been deleted"
         );
+    }
+
+    #[tokio::test]
+    async fn test_uninstall_rejects_path_traversal_skill_id() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &agent_dir).await;
+
+        let result = uninstall_skill_from_agent_impl(&pool, "../escape", "claude-code").await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid skill id"));
     }
 
     #[tokio::test]
@@ -1085,6 +1810,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_copy_install_rejects_path_traversal_skill_id() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &agent_dir).await;
+
+        let result = install_skill_to_agent_copy_impl(&pool, "../escape", "claude-code").await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid skill id"));
+    }
+
+    #[tokio::test]
     async fn test_copy_install_fails_when_canonical_missing() {
         let tmp = TempDir::new().unwrap();
         let central_dir = tmp.path().join("central");
@@ -1120,6 +1859,417 @@ mod tests {
         assert!(
             result.is_err(),
             "copy install should refuse to overwrite an existing real directory"
+        );
+    }
+
+    // ── migrate_agent_skill_to_central_impl ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_migrate_agent_skill_to_central_moves_local_copy_to_central_and_links_back() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        create_agent_skill(&agent_dir, "local-skill");
+
+        let result = migrate_agent_skill_to_central_impl(&pool, "claude-code", "local-skill", None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.skill_id, "local-skill");
+        assert_eq!(result.agent_id, "claude-code");
+        assert_eq!(result.link_type, "symlink");
+
+        let central_skill_dir = central_dir.join("local-skill");
+        assert!(central_skill_dir.join("SKILL.md").exists());
+        assert_eq!(
+            fs::read_to_string(central_skill_dir.join("notes.txt")).unwrap(),
+            "local notes"
+        );
+
+        let agent_skill_dir = agent_dir.join("local-skill");
+        let meta = fs::symlink_metadata(&agent_skill_dir).unwrap();
+        assert!(meta.file_type().is_symlink());
+        assert!(agent_skill_dir.join("SKILL.md").exists());
+
+        let skill = db::get_skill_by_id(&pool, "local-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(skill.is_central);
+        assert_eq!(
+            skill.canonical_path.as_deref(),
+            Some(central_skill_dir.to_str().unwrap())
+        );
+
+        let installations = db::get_skill_installations(&pool, "local-skill")
+            .await
+            .unwrap();
+        let installation = installations
+            .iter()
+            .find(|record| record.agent_id == "claude-code")
+            .unwrap();
+        assert_eq!(installation.link_type, "symlink");
+        assert_eq!(
+            installation.symlink_target.as_deref(),
+            Some(central_skill_dir.to_str().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_migrate_agent_skill_to_central_refuses_existing_central_skill() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        create_central_skill(&central_dir, "conflict-skill");
+        create_agent_skill(&agent_dir, "conflict-skill");
+
+        let result =
+            migrate_agent_skill_to_central_impl(&pool, "claude-code", "conflict-skill", None).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already exists"));
+        let meta = fs::symlink_metadata(agent_dir.join("conflict-skill")).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+    }
+
+    #[tokio::test]
+    async fn test_migrate_agent_skill_to_central_moves_external_symlink_target_to_central() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        let target_dir = create_agent_skill(&tmp.path().join("other"), "external-linked");
+        fs::write(target_dir.join("from-target.txt"), "external notes").unwrap();
+        let agent_link = agent_dir.join("external-linked");
+        create_symlink(&target_dir, &agent_link).unwrap();
+        db::upsert_agent_skill_observation(
+            &pool,
+            &db::AgentSkillObservation {
+                row_id: "claude-code::user::external-linked".to_string(),
+                agent_id: "claude-code".to_string(),
+                skill_id: "external-linked".to_string(),
+                name: "external-linked".to_string(),
+                description: None,
+                file_path: agent_link.join("SKILL.md").to_string_lossy().into_owned(),
+                dir_path: agent_link.to_string_lossy().into_owned(),
+                source_kind: "user".to_string(),
+                source_root: agent_dir.to_string_lossy().into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: Some(target_dir.to_string_lossy().into_owned()),
+                is_read_only: false,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = migrate_agent_skill_to_central_impl(
+            &pool,
+            "claude-code",
+            "external-linked",
+            Some("claude-code::user::external-linked"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.skill_id, "external-linked");
+        let central_skill_dir = central_dir.join("external-linked");
+        assert!(central_skill_dir.join("SKILL.md").exists());
+        assert_eq!(
+            fs::read_to_string(central_skill_dir.join("from-target.txt")).unwrap(),
+            "external notes"
+        );
+        let meta = fs::symlink_metadata(&agent_link).unwrap();
+        assert!(meta.file_type().is_symlink());
+        assert_eq!(agent_link.canonicalize().unwrap(), central_skill_dir.canonicalize().unwrap());
+        assert!(target_dir.join("SKILL.md").exists());
+
+        let agent_skills = db::get_skills_for_agent(&pool, "claude-code").await.unwrap();
+        let migrated_row = agent_skills
+            .iter()
+            .find(|skill| skill.id == "external-linked")
+            .unwrap();
+        assert!(migrated_row.is_central);
+    }
+
+    #[tokio::test]
+    async fn test_migrate_agent_skill_to_central_rejects_mismatched_row_id() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        let actual_dir = create_agent_skill(&agent_dir, "actual-skill");
+        db::upsert_agent_skill_observation(
+            &pool,
+            &db::AgentSkillObservation {
+                row_id: "row-actual".to_string(),
+                agent_id: "claude-code".to_string(),
+                skill_id: "actual-skill".to_string(),
+                name: "actual-skill".to_string(),
+                description: None,
+                file_path: actual_dir.join("SKILL.md").to_string_lossy().into_owned(),
+                dir_path: actual_dir.to_string_lossy().into_owned(),
+                source_kind: "user".to_string(),
+                source_root: agent_dir.to_string_lossy().into_owned(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                is_read_only: false,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = migrate_agent_skill_to_central_impl(
+            &pool,
+            "claude-code",
+            "other-skill",
+            Some("row-actual"),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not 'other-skill'"));
+        assert!(actual_dir.is_dir());
+        assert!(!central_dir.join("other-skill").exists());
+    }
+
+    #[tokio::test]
+    async fn test_migrate_agent_skill_to_central_rejects_internal_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        let skill_dir = create_agent_skill(&agent_dir, "leaky-skill");
+        let secret_file = tmp.path().join("secret.txt");
+        fs::write(&secret_file, "secret").unwrap();
+        create_symlink(&secret_file, &skill_dir.join("secret-link")).unwrap();
+
+        let result =
+            migrate_agent_skill_to_central_impl(&pool, "claude-code", "leaky-skill", None).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Refusing to copy symlink"));
+        assert!(skill_dir.is_dir());
+        assert!(!central_dir.join("leaky-skill").exists());
+        let leftovers = fs::read_dir(&central_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[tokio::test]
+    async fn test_migrate_agent_skill_to_central_rejects_central_root_inside_source() {
+        let tmp = TempDir::new().unwrap();
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let skill_dir = create_agent_skill(&agent_dir, "nested-central");
+        let central_dir = skill_dir.join("central-root");
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+
+        let result =
+            migrate_agent_skill_to_central_impl(&pool, "claude-code", "nested-central", None).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cannot be inside source"));
+        let meta = fs::symlink_metadata(&skill_dir).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+        assert!(
+            !central_dir.exists(),
+            "central root inside source should not be created"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_migrate_agent_skill_to_central_rejects_nonexistent_central_root_via_symlink_parent(
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let skill_dir = create_agent_skill(&agent_dir, "symlink-nested-central");
+        let symlink_parent = tmp.path().join("central-link");
+        create_symlink(&skill_dir, &symlink_parent).unwrap();
+        let central_dir = symlink_parent.join("nested-central");
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+
+        let result = migrate_agent_skill_to_central_impl(
+            &pool,
+            "claude-code",
+            "symlink-nested-central",
+            None,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cannot be inside source"));
+        let meta = fs::symlink_metadata(&skill_dir).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+        assert!(!central_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn test_migrate_agent_skill_to_central_rolls_back_when_db_write_fails() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        let skill_dir = create_agent_skill(&agent_dir, "db-fail");
+        sqlx::query(
+            "CREATE TRIGGER fail_db_fail_skill
+             BEFORE INSERT ON skills
+             WHEN NEW.id = 'db-fail'
+             BEGIN
+               SELECT RAISE(FAIL, 'db fail');
+             END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result =
+            migrate_agent_skill_to_central_impl(&pool, "claude-code", "db-fail", None).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("db fail"));
+        let meta = fs::symlink_metadata(&skill_dir).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+        assert!(skill_dir.join("SKILL.md").exists());
+        assert!(!central_dir.join("db-fail").exists());
+    }
+
+    #[tokio::test]
+    async fn test_batch_migrate_agent_skills_to_central_reports_partial_results() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        create_agent_skill(&agent_dir, "migrate-me");
+        create_agent_skill(&agent_dir, "skip-conflict");
+        create_central_skill(&central_dir, "skip-conflict");
+
+        let result = batch_migrate_agent_skills_to_central_impl(&pool, "claude-code")
+            .await
+            .unwrap();
+
+        assert_eq!(result.succeeded.len(), 1);
+        assert_eq!(result.succeeded[0].skill_id, "migrate-me");
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].skill_id, "skip-conflict");
+        assert!(result.failed.is_empty());
+        assert!(central_dir.join("migrate-me/SKILL.md").exists());
+        assert!(fs::symlink_metadata(agent_dir.join("migrate-me"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(fs::symlink_metadata(agent_dir.join("skip-conflict"))
+            .unwrap()
+            .is_dir());
+    }
+
+    #[tokio::test]
+    async fn test_batch_migrate_agent_skills_to_central_uses_agent_root_when_claude_has_duplicate_observations(
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        let plugin_dir = tmp.path().join("plugin");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+        fs::create_dir_all(&plugin_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        let user_skill_dir = create_agent_skill(&agent_dir, "shared-skill");
+        let plugin_skill_dir = create_agent_skill(&plugin_dir, "shared-skill");
+
+        for (row_id, dir_path, source_kind, is_read_only) in [
+            (
+                "plugin-row",
+                plugin_skill_dir.clone(),
+                "plugin".to_string(),
+                true,
+            ),
+            (
+                "user-row",
+                user_skill_dir.clone(),
+                "user".to_string(),
+                false,
+            ),
+        ] {
+            db::upsert_agent_skill_observation(
+                &pool,
+                &db::AgentSkillObservation {
+                    row_id: row_id.to_string(),
+                    agent_id: "claude-code".to_string(),
+                    skill_id: "shared-skill".to_string(),
+                    name: "shared-skill".to_string(),
+                    description: None,
+                    file_path: dir_path.join("SKILL.md").to_string_lossy().into_owned(),
+                    dir_path: dir_path.to_string_lossy().into_owned(),
+                    source_kind,
+                    source_root: dir_path.parent().unwrap().to_string_lossy().into_owned(),
+                    link_type: "copy".to_string(),
+                    symlink_target: None,
+                    is_read_only,
+                    scanned_at: chrono::Utc::now().to_rfc3339(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let result = batch_migrate_agent_skills_to_central_impl(&pool, "claude-code")
+            .await
+            .unwrap();
+
+        assert_eq!(result.succeeded.len(), 1);
+        assert!(result.failed.is_empty(), "{:?}", result.failed);
+        assert_eq!(result.succeeded[0].skill_id, "shared-skill");
+        assert!(fs::symlink_metadata(agent_dir.join("shared-skill"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let refreshed_rows = db::get_skills_for_agent(&pool, "claude-code")
+            .await
+            .unwrap();
+        let user_row = refreshed_rows
+            .iter()
+            .find(|row| row.row_id == "user-row")
+            .unwrap();
+        assert_eq!(user_row.link_type, "symlink");
+        assert_eq!(
+            user_row.symlink_target.as_deref(),
+            Some(central_dir.join("shared-skill").to_str().unwrap())
+        );
+        assert!(
+            plugin_skill_dir.is_dir(),
+            "plugin duplicate must not be migrated or modified"
         );
     }
 

@@ -16,7 +16,7 @@ import { AgentWithStatus, ScannedSkill, SkillWithLinks } from "@/types";
 import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImportWizard";
 import { useMarketplaceStore } from "@/stores/marketplaceStore";
 import { VirtualizedList } from "@/components/ui/virtualized-list";
-import { formatPathForDisplay } from "@/lib/path";
+import { formatPathForDisplay, joinPathForDisplay } from "@/lib/path";
 import { buildSearchText, normalizeSearchQuery } from "@/lib/search";
 import { isTauriRuntime } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -84,6 +84,7 @@ const noopGetSkillsByAgent = async (_agentId: string) => {};
 const noopPreviewGitHubRepoImport = async () => null;
 const noopResetGitHubImport = () => {};
 const noopTogglePlatformLink = async (_skillId: string, _agentId: string) => {};
+const noopDeleteCentralSkill = async (_skillId: string) => {};
 const noopInstallSkill = async () => ({
   succeeded: [],
   failed: [],
@@ -107,9 +108,10 @@ function EmptyState({ message }: { message: string }) {
 
 // ─── First Visit Empty State ──────────────────────────────────────────────────
 
-function FirstVisitEmptyState() {
+function FirstVisitEmptyState({ centralSkillsDir }: { centralSkillsDir: string }) {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const exampleSkillPath = joinPathForDisplay(centralSkillsDir, "my-skill/SKILL.md");
   return (
     <div className="flex flex-col items-center justify-center h-full gap-6 py-16 text-center px-8">
       <div className="p-5 rounded-full bg-primary/10 ring-1 ring-primary/20">
@@ -118,14 +120,14 @@ function FirstVisitEmptyState() {
       <div className="space-y-2">
         <h2 className="text-xl font-semibold text-foreground">{t("empty.welcomeTitle")}</h2>
         <p className="text-sm text-muted-foreground max-w-sm leading-relaxed">
-          {t("empty.welcomeDesc")}
+          {t("empty.welcomeDesc", { path: centralSkillsDir })}
         </p>
       </div>
       <div className="flex flex-col gap-3 items-center">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 rounded-xl px-4 py-3 max-w-xs text-left border border-border">
+        <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/50 rounded-xl px-4 py-3 max-w-xs text-left border border-border">
           <FolderOpen className="size-4 shrink-0 text-primary/60" />
-          <span>
-            {t("empty.createHint")} <code className="font-mono">~/.agents/skills/my-skill/SKILL.md</code>
+          <span className="min-w-0">
+            {t("empty.createHint")} <code className="font-mono break-all">{exampleSkillPath}</code>
           </span>
         </div>
         <Button
@@ -191,6 +193,9 @@ export function CentralSkillsView() {
     useCentralSkillsStore((state) => state.togglePlatformLink) ??
     noopTogglePlatformLink;
   const togglingAgentId = useCentralSkillsStore((state) => state.togglingAgentId);
+  const deleteCentralSkill =
+    useCentralSkillsStore((state) => state.deleteCentralSkill) ?? noopDeleteCentralSkill;
+  const deletingSkillId = useCentralSkillsStore((state) => state.deletingSkillId);
 
   // Keep the platform sidebar counts in sync after install.
   const refreshCounts =
@@ -341,6 +346,16 @@ export function CentralSkillsView() {
     }
   }
 
+  async function handleDeleteCentralSkill(skillId: string) {
+    try {
+      await deleteCentralSkill(skillId);
+      await refreshCounts();
+      toast.success(t("central.deleteSuccess"));
+    } catch (err) {
+      toast.error(t("central.deleteError", { error: String(err) }));
+    }
+  }
+
   async function handleGitHubPreview() {
     try {
       return await previewGitHubRepoImport(githubRepoUrl);
@@ -399,6 +414,9 @@ export function CentralSkillsView() {
         description={skill.description}
         onDetail={() => handleOpenDrawer(skill.id)}
         onInstallTo={() => handleInstallClick(skill)}
+        onRemove={() => handleDeleteCentralSkill(skill.id)}
+        removeLabel={t("central.deleteSkillLabel", { name: skill.name })}
+        isLoading={deletingSkillId !== null}
         detailButtonRef={(node) => setDetailButtonRef(skill.id, node)}
         className="h-[104px]"
       />
@@ -504,7 +522,7 @@ export function CentralSkillsView() {
         {isLoading ? (
           <EmptyState message={t("central.loading")} />
         ) : skills.length === 0 ? (
-          <FirstVisitEmptyState />
+          <FirstVisitEmptyState centralSkillsDir={centralSkillsDir} />
         ) : filteredSkills.length === 0 ? (
           <EmptyState message={t("central.noMatch", { query: searchQuery })} />
         ) : isSearchActive ? (
@@ -532,6 +550,9 @@ export function CentralSkillsView() {
                 description={skill.description}
                 onDetail={() => handleOpenDrawer(skill.id)}
                 onInstallTo={() => handleInstallClick(skill)}
+                onRemove={() => handleDeleteCentralSkill(skill.id)}
+                removeLabel={t("central.deleteSkillLabel", { name: skill.name })}
+                isLoading={deletingSkillId !== null}
                 detailButtonRef={(node) => setDetailButtonRef(skill.id, node)}
                 platformIcons={{
                   agents,

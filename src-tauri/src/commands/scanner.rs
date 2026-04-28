@@ -348,6 +348,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
     // Accumulate every skill ID discovered in this scan so we can purge stale
     // rows from the database once all directories have been walked.
     let mut all_found_skill_ids: HashSet<String> = HashSet::new();
+    let mut central_found_skill_ids: HashSet<String> = HashSet::new();
 
     // ── Per-agent scans ───────────────────────────────────────────────────────
     for agent in &agents {
@@ -411,6 +412,9 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                     root.claude_source != Some(ClaudeSourceKind::Plugin);
                 if should_persist_manageable_state {
                     all_found_skill_ids.insert(skill.id.clone());
+                    if is_central {
+                        central_found_skill_ids.insert(skill.id.clone());
+                    }
                     found_install_ids.push(skill.id.clone());
 
                     let db_skill = Skill {
@@ -493,6 +497,8 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
     // any scanned scope during this run. This purges rows left behind when
     // skills are deleted from disk between scans.
     let found_ids_vec: Vec<String> = all_found_skill_ids.into_iter().collect();
+    let central_found_ids_vec: Vec<String> = central_found_skill_ids.into_iter().collect();
+    db::clear_stale_central_flags(pool, &central_found_ids_vec).await?;
     db::delete_skills_not_in_scope(pool, &found_ids_vec).await?;
 
     Ok(ScanResult {
@@ -1794,6 +1800,87 @@ mod tests {
             skill.is_central,
             "skill should remain is_central=true even when a coding agent \
              scans the same directory after the central agent"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rescan_clears_central_flag_after_central_directory_changes() {
+        use crate::db;
+
+        let old_central = TempDir::new().unwrap();
+        let new_central = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let central_agent = db::Agent {
+            id: "aa-central-test".to_string(),
+            display_name: "AA Central Test".to_string(),
+            category: "central".to_string(),
+            global_skills_dir: old_central.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        let coding_agent = db::Agent {
+            id: "zz-codex-test".to_string(),
+            display_name: "ZZ Codex Test".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: old_central.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &central_agent)
+            .await
+            .unwrap();
+        db::insert_custom_agent(&pool, &coding_agent).await.unwrap();
+
+        create_skill_dir(
+            old_central.path(),
+            "stale-central-skill",
+            &valid_skill_md("Stale Central Skill", "desc"),
+        );
+
+        scan_all_skills_impl(&pool).await.unwrap();
+        let initially_central = db::get_skill_by_id(&pool, "stale-central-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(initially_central.is_central);
+
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+            .bind(new_central.path().to_string_lossy().to_string())
+            .bind("aa-central-test")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let skill = db::get_skill_by_id(&pool, "stale-central-skill")
+            .await
+            .unwrap()
+            .expect("skill should still exist as a coding platform skill");
+        assert!(
+            !skill.is_central,
+            "skill found only in the old platform directory must not remain central"
+        );
+        assert!(skill.canonical_path.is_none());
+        assert!(
+            db::get_central_skills(&pool).await.unwrap().is_empty(),
+            "central skills list should reflect the empty new central directory"
         );
     }
 }

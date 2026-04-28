@@ -123,6 +123,20 @@ export interface BatchInstallResult {
   failed: Array<{ agent_id: string; error: string }>;
 }
 
+export interface MigrateAgentSkillResult {
+  skill_id: string;
+  agent_id: string;
+  central_path: string;
+  installed_path: string;
+  link_type: string;
+}
+
+export interface BatchMigrateAgentSkillsResult {
+  succeeded: MigrateAgentSkillResult[];
+  skipped: Array<{ skill_id: string; error: string }>;
+  failed: Array<{ skill_id: string; error: string }>;
+}
+
 // ─── Collection Types ─────────────────────────────────────────────────────────
 
 export interface Collection {
@@ -156,6 +170,26 @@ export interface ScanDirectory {
   is_active: boolean;
   is_builtin: boolean;
   added_at: string;
+}
+
+export interface CentralRepositoryConfig {
+  local_path: string;
+  remote_url?: string | null;
+}
+
+export interface CentralRepositoryStatus {
+  is_git_repository: boolean;
+  branch?: string | null;
+  remote_url?: string | null;
+  has_changes: boolean;
+  ahead: number;
+  behind: number;
+  last_error?: string | null;
+}
+
+export interface CentralRepositoryOperationResult {
+  output: string;
+  status: CentralRepositoryStatus;
 }
 
 // ─── Discover Types ───────────────────────────────────────────────────────────
